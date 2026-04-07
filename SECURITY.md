@@ -8,7 +8,7 @@
 
 ## Reporting a Vulnerability
 
-We take the security of go-auth seriously. If you believe you have found a security vulnerability, please report it to us as described below.
+We take the security of auth seriously. If you believe you have found a security vulnerability, please report it to us as described below.
 
 **Please do NOT report security vulnerabilities through public GitHub issues.**
 

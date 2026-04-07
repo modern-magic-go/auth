@@ -1,4 +1,4 @@
-# go-auth
+# auth
 
 A portable, framework-agnostic authentication library for Go. Provides Access/Refresh token lifecycle management with pluggable session storage.
 

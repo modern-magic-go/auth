@@ -1,4 +1,4 @@
-// Example demonstrates basic go-auth usage with memory store.
+// Example demonstrates basic auth usage with memory store.
 //
 // Run with: go run .
 package main

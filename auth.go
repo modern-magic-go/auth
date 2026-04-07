@@ -5,9 +5,11 @@
 // all dependencies must be explicitly injected at initialization.
 package auth
 
-import "github.com/modern-magic-go/auth/internal/core"
+import (
+	"context"
 
-// ─── Version ───────────────────────────────────────────────────────────────
+	"github.com/modern-magic-go/auth/internal/core"
+)
 
 const ModuleVersion = core.ModuleVersion
 const CompatibilityNotes = core.CompatibilityNotes
@@ -15,8 +17,6 @@ const CompatibilityNotes = core.CompatibilityNotes
 type VersionInfo = core.VersionInfo
 
 func GetVersionInfo() VersionInfo { return core.GetVersionInfo() }
-
-// ─── Errors ────────────────────────────────────────────────────────────────
 
 var (
 	ErrInvalidConfig        = core.ErrInvalidConfig
@@ -29,8 +29,6 @@ var (
 	ErrRefreshTokenReplayed = core.ErrRefreshTokenReplayed
 )
 
-// ─── Config ────────────────────────────────────────────────────────────────
-
 type RefreshPolicy = core.RefreshPolicy
 
 const (
@@ -42,8 +40,6 @@ const (
 type Config = core.Config
 
 func DefaultConfig() Config { return core.DefaultConfig() }
-
-// ─── Models ────────────────────────────────────────────────────────────────
 
 type TokenType = core.TokenType
 
@@ -63,8 +59,6 @@ type (
 	RefreshResult   = core.RefreshResult
 )
 
-// ─── Interfaces ────────────────────────────────────────────────────────────
-
 type (
 	TokenFormatAdapter = core.TokenFormatAdapter
 	SessionStore       = core.SessionStore
@@ -72,8 +66,6 @@ type (
 	RandomSource       = core.RandomSource
 	Serializer         = core.Serializer
 )
-
-// ─── Service Facade ────────────────────────────────────────────────────────
 
 type Service = core.Service
 type Option = core.Option
@@ -94,12 +86,20 @@ func WithSerializer(serializer Serializer) Option {
 	return core.WithSerializer(serializer)
 }
 
+func WithRollbackFailureHandler(handler func(ctx context.Context, op string, tokenID string, err error)) Option {
+	return core.WithRollbackFailureHandler(handler)
+}
+
 func NewService(cfg Config, store SessionStore, opts ...Option) (*Service, error) {
 	return core.NewService(cfg, store, opts...)
 }
 
 func NewDefaultTokenFormatAdapter() TokenFormatAdapter {
 	return core.NewDefaultTokenFormatAdapter()
+}
+
+func NewSignedTokenFormatAdapter(secret []byte) TokenFormatAdapter {
+	return core.NewSignedTokenFormatAdapter(secret)
 }
 
 func ParseBearerToken(authorization string) (string, error) {

@@ -8,12 +8,13 @@ import (
 
 // Service 提供框架无关的认证核心能力。
 type Service struct {
-	config     Config
-	store      SessionStore
-	format     TokenFormatAdapter
-	clock      Clock
-	random     RandomSource
-	serializer Serializer
+	config         Config
+	store          SessionStore
+	format         TokenFormatAdapter
+	clock          Clock
+	random         RandomSource
+	serializer     Serializer
+	onRollbackFail func(ctx context.Context, op string, tokenID string, err error)
 }
 
 // Option 用于可选依赖注入。
@@ -40,7 +41,12 @@ func WithRandomSource(random RandomSource) Option {
 	}
 }
 
-// WithSerializer 指定可选序列化器。
+func WithRollbackFailureHandler(handler func(ctx context.Context, op string, tokenID string, err error)) Option {
+	return func(s *Service) {
+		s.onRollbackFail = handler
+	}
+}
+
 func WithSerializer(serializer Serializer) Option {
 	return func(s *Service) {
 		s.serializer = serializer
@@ -138,7 +144,7 @@ func (s *Service) IssueTokenPair(ctx context.Context, req IssueRequest) (TokenPa
 		return TokenPair{}, err
 	}
 	if err := s.store.SaveAccessSession(ctx, accessID, accessSession, ttlFrom(now, accessExp)); err != nil {
-		_ = s.store.DeleteRefreshSession(ctx, refreshID)
+		s.rollbackRefreshSession(ctx, refreshID)
 		return TokenPair{}, err
 	}
 
@@ -407,4 +413,12 @@ func cloneMetadata(metadata SessionMetadata) SessionMetadata {
 		out[k] = v
 	}
 	return out
+}
+
+func (s *Service) rollbackRefreshSession(ctx context.Context, refreshID string) {
+	if err := s.store.DeleteRefreshSession(ctx, refreshID); err != nil {
+		if s.onRollbackFail != nil {
+			s.onRollbackFail(ctx, "DeleteRefreshSession", refreshID, err)
+		}
+	}
 }

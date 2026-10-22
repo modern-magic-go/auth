@@ -278,14 +278,15 @@ func (s *Service) IssueTokenPair(ctx context.Context, req IssueRequest) (TokenPa
 		Metadata:       cloneMetadata(req.Metadata),
 	}
 	refreshSession := RefreshSession{
-		TokenID:      refreshID,
-		Subject:      req.Subject,
-		IssuedAt:     now,
-		ExpiresAt:    refreshExp,
-		SessionID:    sessionID,
-		TokenVersion: version,
-		ExtraClaims:  cloneMetadata(req.ExtraClaims),
-		Metadata:     cloneMetadata(req.Metadata),
+		TokenID:       refreshID,
+		Subject:       req.Subject,
+		IssuedAt:      now,
+		ExpiresAt:     refreshExp,
+		SessionID:     sessionID,
+		AccessTokenID: accessID,
+		TokenVersion:  version,
+		ExtraClaims:   cloneMetadata(req.ExtraClaims),
+		Metadata:      cloneMetadata(req.Metadata),
 	}
 
 	if s.indexedStore != nil {
@@ -558,40 +559,67 @@ func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken string) (
 		}
 
 		newRefreshSession := RefreshSession{
-			TokenID:      newRefreshID,
-			Subject:      refreshSession.Subject,
-			IssuedAt:     now,
-			ExpiresAt:    now.Add(s.config.RefreshTokenTTL),
-			SessionID:    sessionID,
-			TokenVersion: version,
-			ExtraClaims:  cloneExtraClaims(extraClaims),
-			Metadata:     cloneMetadata(refreshSession.Metadata),
+			TokenID:       newRefreshID,
+			Subject:       refreshSession.Subject,
+			IssuedAt:      now,
+			ExpiresAt:     now.Add(s.config.RefreshTokenTTL),
+			SessionID:     sessionID,
+			AccessTokenID: accessID,
+			TokenVersion:  version,
+			ExtraClaims:   cloneExtraClaims(extraClaims),
+			Metadata:      cloneMetadata(refreshSession.Metadata),
+		}
+
+		newRef := SessionRef{
+			SessionID:      sessionID,
+			Subject:        refreshSession.Subject,
+			AccessTokenID:  accessID,
+			RefreshTokenID: newRefreshID,
+			IssuedAt:       refreshSession.IssuedAt,
+			ExpiresAt:      newRefreshSession.ExpiresAt,
 		}
 
 		var ok bool
+		indexUpdated := false
 		switch {
 		case s.graceRotation != nil:
 			record, recordErr := s.buildGraceRecord(ctx, refreshKey, newRefreshID, sessionID, refreshSession.Subject, accessToken, newRefreshTokenValue, accessExp, newRefreshSession.ExpiresAt)
 			if recordErr != nil {
 				return RefreshResult{}, recordErr
 			}
-			ok, err = s.graceRotation.RotateRefreshSessionWithGrace(
-				ctx,
-				refreshKey,
-				newRefreshSession,
-				record,
-				ttlFrom(now, newRefreshSession.ExpiresAt),
-				s.config.RefreshGracePeriod,
-			)
-		case s.indexedStore != nil:
-			newRef := SessionRef{
-				SessionID:      sessionID,
-				Subject:        refreshSession.Subject,
-				AccessTokenID:  accessID,
-				RefreshTokenID: newRefreshID,
-				IssuedAt:       refreshSession.IssuedAt,
-				ExpiresAt:      newRefreshSession.ExpiresAt,
+			if s.indexedStore != nil {
+				if indexedGrace, okType := s.store.(IndexedGraceRotationStore); okType {
+					ok, err = indexedGrace.RotateRefreshSessionWithGraceAndIndex(
+						ctx,
+						refreshKey,
+						newRefreshSession,
+						newRef,
+						record,
+						ttlFrom(now, newRefreshSession.ExpiresAt),
+						s.config.RefreshGracePeriod,
+					)
+					indexUpdated = true
+				} else {
+					ok, err = s.graceRotation.RotateRefreshSessionWithGrace(
+						ctx,
+						refreshKey,
+						newRefreshSession,
+						record,
+						ttlFrom(now, newRefreshSession.ExpiresAt),
+						s.config.RefreshGracePeriod,
+					)
+				}
+			} else {
+				ok, err = s.graceRotation.RotateRefreshSessionWithGrace(
+					ctx,
+					refreshKey,
+					newRefreshSession,
+					record,
+					ttlFrom(now, newRefreshSession.ExpiresAt),
+					s.config.RefreshGracePeriod,
+				)
 			}
+		case s.indexedStore != nil:
 			ok, err = s.indexedStore.RotateRefreshSessionWithIndex(
 				ctx,
 				refreshKey,
@@ -622,15 +650,7 @@ func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken string) (
 			}
 			return RefreshResult{}, ErrTokenRevoked
 		}
-		if s.indexedStore != nil && s.graceRotation != nil {
-			newRef := SessionRef{
-				SessionID:      sessionID,
-				Subject:        refreshSession.Subject,
-				AccessTokenID:  accessID,
-				RefreshTokenID: newRefreshID,
-				IssuedAt:       refreshSession.IssuedAt,
-				ExpiresAt:      newRefreshSession.ExpiresAt,
-			}
+		if s.indexedStore != nil && s.graceRotation != nil && !indexUpdated {
 			if err := s.indexedStore.TouchSession(ctx, newRef, ttlFrom(now, newRefreshSession.ExpiresAt)); err != nil {
 				return RefreshResult{}, err
 			}
@@ -667,6 +687,12 @@ func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken string) (
 	}
 	if err := s.store.SaveAccessSession(ctx, accessID, accessSession, ttlFrom(now, accessExp)); err != nil {
 		return RefreshResult{}, err
+	}
+	if !rotated {
+		refreshSession.AccessTokenID = accessID
+		if err := s.store.SaveRefreshSession(ctx, refreshKey, refreshSession, ttlFrom(now, refreshSession.ExpiresAt)); err != nil {
+			return RefreshResult{}, err
+		}
 	}
 
 	return RefreshResult{
@@ -721,6 +747,9 @@ func (s *Service) RevokeRefreshToken(ctx context.Context, token string) error {
 	}
 	if err := s.store.DeleteRefreshSession(ctx, refreshKey); err != nil {
 		return err
+	}
+	if session.AccessTokenID != "" {
+		_ = s.store.DeleteAccessSession(ctx, session.AccessTokenID)
 	}
 	if graceKey != "" {
 		_ = s.graceStore.DeleteRefreshGrace(ctx, graceKey)
@@ -805,6 +834,9 @@ func (s *Service) logoutRefresh(ctx context.Context, refreshKey string, ttl time
 	if err := s.store.DeleteRefreshSession(ctx, refreshKey); err != nil {
 		return err
 	}
+	if session.AccessTokenID != "" {
+		_ = s.store.DeleteAccessSession(ctx, session.AccessTokenID)
+	}
 	if graceKey != "" {
 		_ = s.graceStore.DeleteRefreshGrace(ctx, graceKey)
 	}
@@ -843,12 +875,19 @@ func (s *Service) RevokeSession(ctx context.Context, sessionID string, ttl time.
 }
 
 // RevokeSubject 按 Subject 吊销全部会话（需要 RevocationStore）。
+// 先写 denylist 再清理索引：即使清理失败，token 也已经被拒绝。
 func (s *Service) RevokeSubject(ctx context.Context, subject string, ttl time.Duration) error {
 	if s.revocationStore == nil {
 		return ErrRevocationNotConfigured
 	}
 	if subject == "" {
 		return ErrInvalidConfig
+	}
+	if ttl <= 0 {
+		ttl = s.defaultRevocationTTL()
+	}
+	if err := s.revocationStore.RevokeSubject(ctx, subject, ttl); err != nil {
+		return err
 	}
 	if s.indexedStore != nil {
 		refs, err := s.indexedStore.ListBySubject(ctx, subject)
@@ -861,10 +900,7 @@ func (s *Service) RevokeSubject(ctx context.Context, subject string, ttl time.Du
 			}
 		}
 	}
-	if ttl <= 0 {
-		ttl = s.defaultRevocationTTL()
-	}
-	return s.revocationStore.RevokeSubject(ctx, subject, ttl)
+	return nil
 }
 
 // RenewAccessToken 对活动 Access 会话执行续期。

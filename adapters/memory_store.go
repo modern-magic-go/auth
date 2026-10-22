@@ -293,13 +293,37 @@ func (m *MemoryStore) RotateRefreshSessionWithGrace(_ context.Context, oldTokenI
 	defer m.mu.Unlock()
 
 	old, ok := m.refresh[oldTokenID]
-	if !ok || time.Now().UTC().After(old.expire) {
+	if !ok || m.currentTime().After(old.expire) {
 		delete(m.refresh, oldTokenID)
 		return false, nil
 	}
 	delete(m.refresh, oldTokenID)
 	m.refresh[newSession.TokenID] = memoryRefreshEntry{session: newSession, expire: expiresAtFromTTL(sessionTTL, newSession.ExpiresAt)}
-	m.grace[record.OldTokenID] = memoryGraceEntry{record: record, expire: time.Now().UTC().Add(graceTTL)}
+	m.grace[record.OldTokenID] = memoryGraceEntry{record: record, expire: m.currentTime().Add(graceTTL)}
+	return true, nil
+}
+
+// RotateRefreshSessionWithGraceAndIndex 原子完成 refresh 轮换、grace 记录与索引更新。
+func (m *MemoryStore) RotateRefreshSessionWithGraceAndIndex(_ context.Context, oldTokenID string, newSession auth.RefreshSession, newRef auth.SessionRef, record auth.RefreshGraceRecord, sessionTTL, graceTTL time.Duration) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	old, ok := m.refresh[oldTokenID]
+	if !ok || m.currentTime().After(old.expire) {
+		delete(m.refresh, oldTokenID)
+		return false, nil
+	}
+	delete(m.refresh, oldTokenID)
+	m.refresh[newSession.TokenID] = memoryRefreshEntry{session: newSession, expire: expiresAtFromTTL(sessionTTL, newSession.ExpiresAt)}
+	m.grace[record.OldTokenID] = memoryGraceEntry{record: record, expire: m.currentTime().Add(graceTTL)}
+
+	if existing, ok := m.refs[newRef.SessionID]; ok {
+		newRef.IssuedAt = existing.IssuedAt
+		newRef.Subject = existing.Subject
+	}
+	m.refs[newRef.SessionID] = newRef
+	m.subjects[newRef.Subject] = appendUniqueSessionID(m.subjects[newRef.Subject], newRef.SessionID)
+	m.sortSubjectLocked(newRef.Subject)
 	return true, nil
 }
 
@@ -342,6 +366,10 @@ func removeSessionID(ids []string, sessionID string) []string {
 		}
 	}
 	return ids
+}
+
+func (m *MemoryStore) currentTime() time.Time {
+	return time.Now().UTC()
 }
 
 func expiresAtFromTTL(ttl time.Duration, fallback time.Time) time.Time {

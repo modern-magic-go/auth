@@ -118,6 +118,12 @@ func TestService_StatelessRevocation(t *testing.T) {
 	pair, err := svc.IssueTokenPair(context.Background(), auth.IssueRequest{Subject: "user-revoke"})
 	require.NoError(t, err)
 
+	logoutPair, err := svc.IssueTokenPair(context.Background(), auth.IssueRequest{Subject: "user-logout"})
+	require.NoError(t, err)
+	require.NoError(t, svc.Logout(context.Background(), logoutPair.AccessToken, time.Hour))
+	_, err = svc.ValidateAccessToken(context.Background(), logoutPair.AccessToken)
+	assert.ErrorIs(t, err, auth.ErrTokenRevoked)
+
 	require.NoError(t, svc.RevokeSession(context.Background(), pair.SessionID, time.Hour))
 	_, err = svc.ValidateAccessToken(context.Background(), pair.AccessToken)
 	assert.ErrorIs(t, err, auth.ErrTokenRevoked)
@@ -149,4 +155,5 @@ func TestService_StatelessRevokeWithoutStore(t *testing.T) {
 	pair, err := svc.IssueTokenPair(context.Background(), auth.IssueRequest{Subject: "user"})
 	require.NoError(t, err)
 	assert.ErrorIs(t, svc.RevokeAccessToken(context.Background(), pair.AccessToken), auth.ErrRevocationNotConfigured)
+	assert.ErrorIs(t, svc.Logout(context.Background(), pair.AccessToken, time.Minute), auth.ErrRevocationNotConfigured)
 }

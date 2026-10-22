@@ -74,17 +74,18 @@ type (
 )
 
 type (
-	TokenFormatAdapter  = core.TokenFormatAdapter
-	RefreshTokenFormat  = core.RefreshTokenFormat
-	SessionStore        = core.SessionStore
-	SigningFormat       = core.SigningFormat
-	IndexedSessionStore = core.IndexedSessionStore
-	RevocationStore     = core.RevocationStore
-	RefreshGraceStore   = core.RefreshGraceStore
-	GraceRotationStore  = core.GraceRotationStore
-	Clock               = core.Clock
-	RandomSource        = core.RandomSource
-	Serializer          = core.Serializer
+	TokenFormatAdapter        = core.TokenFormatAdapter
+	RefreshTokenFormat        = core.RefreshTokenFormat
+	SessionStore              = core.SessionStore
+	SigningFormat             = core.SigningFormat
+	IndexedSessionStore       = core.IndexedSessionStore
+	RevocationStore           = core.RevocationStore
+	RefreshGraceStore         = core.RefreshGraceStore
+	GraceRotationStore        = core.GraceRotationStore
+	IndexedGraceRotationStore = core.IndexedGraceRotationStore
+	Clock                     = core.Clock
+	RandomSource              = core.RandomSource
+	Serializer                = core.Serializer
 )
 
 type Service = core.Service

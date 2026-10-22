@@ -48,6 +48,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CreateSession`、索引轮换与 grace 轮换统一使用注入的 Serializer。
 - 安全加固：grace 记录中的 access token 也改为 AES-GCM 密文，与 refresh token
   保持一致，不再明文落库。
+- `RevokeSubject` 先写 denylist 再清理索引，避免清理失败时 stateless access 仍有效。
+- 新增 `IndexedGraceRotationStore`，grace 轮换与 subject 索引更新在同一原子操作内完成。
+- `RefreshSession` 记录 `AccessTokenID`，`Logout(refreshToken)` 可清理对应 access session。
+- README 同步 `TokenVersion`、Logout 与 maxOnline 示例。
+
+### Changed
+
+- `RefreshGraceRecord.AccessToken` 重命名为 `AccessTokenCiphertext`。滚动升级时旧
+  版本写入的 grace 记录无法解密重放；grace TTL 通常很短，升级后可让客户端重新
+  refresh 或重新登录。
 
 ## [v1.0.0] - 2026-04-07
 

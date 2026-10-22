@@ -354,6 +354,62 @@ return 1`,
 	return toBool(result)
 }
 
+// RotateRefreshSessionWithGraceAndIndex 单条 Lua 完成 grace 轮换与索引更新。
+func (s *RedisStore) RotateRefreshSessionWithGraceAndIndex(ctx context.Context, oldTokenID string, newSession auth.RefreshSession, newRef auth.SessionRef, record auth.RefreshGraceRecord, sessionTTL, graceTTL time.Duration) (bool, error) {
+	keys, err := s.extendedKeys()
+	if err != nil {
+		return false, err
+	}
+	if newRef.IssuedAt.IsZero() {
+		newRef.IssuedAt = time.Now().UTC()
+	}
+	sessionJSON, err := s.serializer.Marshal(newSession)
+	if err != nil {
+		return false, err
+	}
+	graceJSON, err := json.Marshal(record)
+	if err != nil {
+		return false, err
+	}
+	recordJSON, err := json.Marshal(s.newSessionRecord(keys, newRef))
+	if err != nil {
+		return false, err
+	}
+	result, err := s.client.Eval(
+		`if not redis.call("GET", KEYS[1]) then
+  return 0
+end
+redis.call("DEL", KEYS[1])
+redis.call("SETEX", KEYS[2], ARGV[1], ARGV[2])
+redis.call("SETEX", KEYS[3], ARGV[3], ARGV[4])
+redis.call("SETEX", KEYS[4], ARGV[1], ARGV[5])
+redis.call("HSET", KEYS[5], ARGV[6], ARGV[5])
+redis.call("ZADD", KEYS[6], ARGV[7], ARGV[6])
+redis.call("EXPIRE", KEYS[5], ARGV[1])
+redis.call("EXPIRE", KEYS[6], ARGV[1])
+return 1`,
+		[]string{
+			keys.RefreshKey(oldTokenID),
+			keys.RefreshKey(newSession.TokenID),
+			keys.RefreshGraceKey(oldTokenID),
+			keys.SessionKey(newRef.SessionID),
+			s.refsKey(newRef.Subject, keys),
+			keys.SubjectSessionsKey(newRef.Subject),
+		},
+		seconds(sessionTTL),
+		sessionJSON,
+		seconds(graceTTL),
+		graceJSON,
+		recordJSON,
+		newRef.SessionID,
+		newRef.IssuedAt.UnixNano(),
+	)
+	if err != nil {
+		return false, err
+	}
+	return toBool(result)
+}
+
 func parseEvictedRefs(result any) ([]auth.SessionRef, error) {
 	values, err := toStringSlice(result)
 	if err != nil {

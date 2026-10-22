@@ -66,7 +66,7 @@ result, _ := svc.ValidateAccessToken(ctx, pair.AccessToken)
 // 6. 刷新
 refreshed, _ := svc.RefreshAccessToken(ctx, pair.RefreshToken)
 
-// 7. 登出时撤销
+// 7. 仅撤销当前 access token；完整登出请配置 RevocationStore 后调用 Logout
 svc.RevokeAccessToken(ctx, pair.AccessToken)
 ```
 
@@ -95,7 +95,7 @@ svc, err := auth.NewService(cfg, store,
 - 外部系统签发 token 时必须包含 `jti/typ/sub/iat/exp/ver`，缺失或为空的 `ver`
   会被拒绝。
 - `Decode` 拒绝 `alg=none`、非 HS256、错误签名、过期/未生效、错误 `iss/aud`。
-- `ver` 目前固定为 `ModuleVersion`，`typ` 只能是 `access` / `refresh`。
+- `ver` 默认是 `ModuleVersion`，可用 `Config.TokenVersion` 或 `IssueRequest.Version` 覆盖；`typ` 只能是 `access` / `refresh`。
 - JWT 时间校验使用 `WithJWTClock`（默认真实时钟）；如果自定义了 `Config.ClockSkew`，请用
   `WithJWTLeeway` 设置相同容差。
 
@@ -186,6 +186,7 @@ svc.RevokeSubject(ctx, subject, 0)
 ```go
 cfg.MaxSessionsPerSubject = 5
 svc, _ := auth.NewService(cfg, indexedStore,
+    auth.WithRevocationStore(revocationStore),
     auth.WithSessionEvictionHandler(func(ctx context.Context, evicted []auth.SessionRef) {
         // 可在这里写 denylist，保证无状态 access token 立即失效
     }),

@@ -150,6 +150,32 @@ func TestMemoryStoreRefreshGrace(t *testing.T) {
 	assert.Equal(t, "new", got.NewTokenID)
 }
 
+func TestMemoryStoreGraceAndIndexAtomic(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	access := auth.AccessSession{TokenID: "a1", Subject: "user", SessionID: "sid", IssuedAt: now, ExpiresAt: now.Add(time.Minute)}
+	refresh := auth.RefreshSession{TokenID: "r1", Subject: "user", SessionID: "sid", IssuedAt: now, ExpiresAt: now.Add(time.Hour)}
+	_, err := store.CreateSession(ctx, access, refresh, time.Minute, time.Hour, 2)
+	require.NoError(t, err)
+
+	newSession := auth.RefreshSession{TokenID: "r2", Subject: "user", SessionID: "sid", IssuedAt: now, ExpiresAt: now.Add(time.Hour)}
+	newRef := auth.SessionRef{SessionID: "sid", Subject: "user", AccessTokenID: "a2", RefreshTokenID: "r2", IssuedAt: now, ExpiresAt: now.Add(time.Hour)}
+	record := auth.RefreshGraceRecord{OldTokenID: "r1", NewTokenID: "r2", SessionID: "sid", Subject: "user", AccessTokenCiphertext: "a", RefreshTokenCiphertext: "r"}
+	ok, err := store.RotateRefreshSessionWithGraceAndIndex(ctx, "r1", newSession, newRef, record, time.Hour, time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	refs, err := store.ListBySubject(ctx, "user")
+	require.NoError(t, err)
+	require.Len(t, refs, 1)
+	assert.Equal(t, "a2", refs[0].AccessTokenID)
+	got, err := store.GetRefreshGrace(ctx, "r1")
+	require.NoError(t, err)
+	assert.Equal(t, "r2", got.NewTokenID)
+}
+
 func TestMemoryRevocationStore(t *testing.T) {
 	store := NewMemoryRevocationStore()
 	ctx := context.Background()

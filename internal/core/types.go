@@ -177,14 +177,15 @@ type AccessSession struct {
 
 // RefreshSession 为服务端存储的 Refresh Token 会话记录。
 type RefreshSession struct {
-	TokenID      string          `json:"token_id"`
-	Subject      string          `json:"subject"`
-	IssuedAt     time.Time       `json:"issued_at"`
-	ExpiresAt    time.Time       `json:"expires_at"`
-	SessionID    string          `json:"session_id,omitempty"`
-	TokenVersion string          `json:"token_version,omitempty"`
-	ExtraClaims  SessionMetadata `json:"extra_claims,omitempty"`
-	Metadata     SessionMetadata `json:"metadata,omitempty"`
+	TokenID       string          `json:"token_id"`
+	Subject       string          `json:"subject"`
+	IssuedAt      time.Time       `json:"issued_at"`
+	ExpiresAt     time.Time       `json:"expires_at"`
+	SessionID     string          `json:"session_id,omitempty"`
+	AccessTokenID string          `json:"access_token_id,omitempty"`
+	TokenVersion  string          `json:"token_version,omitempty"`
+	ExtraClaims   SessionMetadata `json:"extra_claims,omitempty"`
+	Metadata      SessionMetadata `json:"metadata,omitempty"`
 }
 
 // TokenPair 表示登录后签发的一对令牌。
@@ -308,6 +309,11 @@ type RefreshGraceStore interface {
 // GraceRotationStore 将 refresh 轮换与 grace 记录写入合并为一个原子操作。
 type GraceRotationStore interface {
 	RotateRefreshSessionWithGrace(ctx context.Context, oldTokenID string, newSession RefreshSession, record RefreshGraceRecord, sessionTTL, graceTTL time.Duration) (bool, error)
+}
+
+// IndexedGraceRotationStore 将 grace 轮换与 subject 索引更新合并为同一个原子操作。
+type IndexedGraceRotationStore interface {
+	RotateRefreshSessionWithGraceAndIndex(ctx context.Context, oldTokenID string, newSession RefreshSession, newRef SessionRef, record RefreshGraceRecord, sessionTTL, graceTTL time.Duration) (bool, error)
 }
 
 // Clock 抽象时间源，便于测试。

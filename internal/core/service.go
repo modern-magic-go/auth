@@ -716,6 +716,9 @@ func (s *Service) RevokeRefreshToken(ctx context.Context, token string) error {
 	}
 
 	session, getErr := s.store.GetRefreshSession(ctx, refreshKey)
+	if getErr != nil && !errors.Is(getErr, ErrSessionNotFound) {
+		return getErr
+	}
 	if err := s.store.DeleteRefreshSession(ctx, refreshKey); err != nil {
 		return err
 	}

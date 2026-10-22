@@ -7,6 +7,7 @@ package auth
 
 import (
 	"context"
+	"time"
 
 	"github.com/modern-magic-go/auth/internal/core"
 )
@@ -61,6 +62,7 @@ type (
 
 type (
 	TokenFormatAdapter = core.TokenFormatAdapter
+	RefreshTokenFormat = core.RefreshTokenFormat
 	SessionStore       = core.SessionStore
 	Clock              = core.Clock
 	RandomSource       = core.RandomSource
@@ -69,9 +71,23 @@ type (
 
 type Service = core.Service
 type Option = core.Option
+type JWTOption = core.JWTOption
+type OpaqueRefreshOption = core.OpaqueRefreshOption
 
 func WithTokenFormat(format TokenFormatAdapter) Option {
 	return core.WithTokenFormat(format)
+}
+
+func WithAccessTokenFormat(format TokenFormatAdapter) Option {
+	return core.WithAccessTokenFormat(format)
+}
+
+func WithRefreshTokenFormat(format RefreshTokenFormat) Option {
+	return core.WithRefreshTokenFormat(format)
+}
+
+func WithOpaqueRefreshToken(opts ...OpaqueRefreshOption) Option {
+	return core.WithOpaqueRefreshToken(opts...)
 }
 
 func WithClock(clock Clock) Option {
@@ -100,6 +116,34 @@ func NewDefaultTokenFormatAdapter() TokenFormatAdapter {
 
 func NewSignedTokenFormatAdapter(secret []byte) TokenFormatAdapter {
 	return core.NewSignedTokenFormatAdapter(secret)
+}
+
+func NewJWTHS256FormatAdapter(secret []byte, opts ...JWTOption) TokenFormatAdapter {
+	return core.NewJWTHS256FormatAdapter(secret, opts...)
+}
+
+func WithJWTIssuer(issuer string) JWTOption {
+	return core.WithJWTIssuer(issuer)
+}
+
+func WithJWTAudience(audience ...string) JWTOption {
+	return core.WithJWTAudience(audience...)
+}
+
+func WithJWTLeeway(leeway time.Duration) JWTOption {
+	return core.WithJWTLeeway(leeway)
+}
+
+func WithJWTClock(clock Clock) JWTOption {
+	return core.WithJWTClock(clock)
+}
+
+func NewOpaqueRefreshTokenFormat(opts ...OpaqueRefreshOption) RefreshTokenFormat {
+	return core.NewOpaqueRefreshTokenFormat(opts...)
+}
+
+func WithOpaqueRandomSource(random RandomSource) OpaqueRefreshOption {
+	return core.WithOpaqueRandomSource(random)
 }
 
 func ParseBearerToken(authorization string) (string, error) {

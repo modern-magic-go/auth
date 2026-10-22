@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- 新增 `NewJWTHS256FormatAdapter`：输出标准三段式 HS256 JWT，支持 `iss` / `aud` /
+  leeway 配置，拒绝 `alg=none`、非 HS256、错误签名、过期/未生效与错误 `iss/aud`。
+- 新增 `WithAccessTokenFormat` / `WithRefreshTokenFormat` / `WithOpaqueRefreshToken`：
+  支持 access 与 refresh 使用不同 token 格式。
+- 新增 `NewOpaqueRefreshTokenFormat`：32 字节随机、Base64URL 编码的不透明 refresh
+  token，持久化 ID 为 `Base64URL(SHA-256(token))`，存储层不接触 token 明文。
+- 新增 `example/jwt_opaque` 示例与 `testdata/interop` 跨语言互验模块（golang-jwt /
+  PHP lcobucci/jwt）。
+
 ## [v1.0.0] - 2026-04-07
 
 ### Added

@@ -10,7 +10,13 @@ import (
 type Service struct {
 	config         Config
 	store          SessionStore
-	format         TokenFormatAdapter
+	accessFormat   TokenFormatAdapter
+	claimsFormat   TokenFormatAdapter
+	refreshFormat  RefreshTokenFormat
+	legacyFormat   TokenFormatAdapter
+	legacySet      bool
+	accessSet      bool
+	refreshSet     bool
 	clock          Clock
 	random         RandomSource
 	serializer     Serializer
@@ -20,10 +26,36 @@ type Service struct {
 // Option 用于可选依赖注入。
 type Option func(*Service)
 
-// WithTokenFormat 指定自定义 token 格式适配器。
+// WithTokenFormat 指定 access 与 claims refresh 共用的 token 格式适配器（兼容旧行为）。
 func WithTokenFormat(format TokenFormatAdapter) Option {
 	return func(s *Service) {
-		s.format = format
+		s.legacyFormat = format
+		s.legacySet = true
+	}
+}
+
+// WithAccessTokenFormat 指定 access token 使用的格式。未显式配置 refresh 格式时，
+// claims refresh 默认沿用该格式；需要不透明 refresh 时再加 WithOpaqueRefreshToken。
+func WithAccessTokenFormat(format TokenFormatAdapter) Option {
+	return func(s *Service) {
+		s.accessFormat = format
+		s.accessSet = true
+	}
+}
+
+// WithRefreshTokenFormat 指定不透明 refresh token 格式。
+func WithRefreshTokenFormat(format RefreshTokenFormat) Option {
+	return func(s *Service) {
+		s.refreshFormat = format
+		s.refreshSet = true
+	}
+}
+
+// WithOpaqueRefreshToken 使用内置的 32 字节不透明 refresh token。
+func WithOpaqueRefreshToken(opts ...OpaqueRefreshOption) Option {
+	return func(s *Service) {
+		s.refreshFormat = NewOpaqueRefreshTokenFormat(opts...)
+		s.refreshSet = true
 	}
 }
 
@@ -60,19 +92,39 @@ func NewService(cfg Config, store SessionStore, opts ...Option) (*Service, error
 	}
 
 	s := &Service{
-		config:     cfg.Normalize(),
-		store:      store,
-		format:     NewDefaultTokenFormatAdapter(),
-		clock:      defaultClock{},
-		random:     defaultRandomSource{},
-		serializer: jsonSerializer{},
+		config:       cfg.Normalize(),
+		store:        store,
+		legacyFormat: NewDefaultTokenFormatAdapter(),
+		clock:        defaultClock{},
+		random:       defaultRandomSource{},
+		serializer:   jsonSerializer{},
 	}
 
 	for _, opt := range opts {
 		opt(s)
 	}
 
-	if s.format == nil || s.clock == nil || s.random == nil {
+	if s.legacyFormat == nil {
+		return nil, ErrInvalidConfig
+	}
+	if !s.accessSet {
+		s.accessFormat = s.legacyFormat
+	}
+	if s.accessFormat == nil {
+		return nil, ErrInvalidConfig
+	}
+	if s.refreshSet {
+		if s.refreshFormat == nil {
+			return nil, ErrInvalidConfig
+		}
+	} else {
+		if s.legacySet {
+			s.claimsFormat = s.legacyFormat
+		} else {
+			s.claimsFormat = s.accessFormat
+		}
+	}
+	if s.clock == nil || s.random == nil {
 		return nil, ErrInvalidConfig
 	}
 
@@ -90,10 +142,6 @@ func (s *Service) IssueTokenPair(ctx context.Context, req IssueRequest) (TokenPa
 	if err != nil {
 		return TokenPair{}, err
 	}
-	refreshID, err := s.random.NewID(s.config.TokenIDLength)
-	if err != nil {
-		return TokenPair{}, err
-	}
 
 	accessExp := now.Add(s.config.AccessTokenTTL)
 	refreshExp := now.Add(s.config.RefreshTokenTTL)
@@ -106,22 +154,37 @@ func (s *Service) IssueTokenPair(ctx context.Context, req IssueRequest) (TokenPa
 		ExpiresAt: accessExp,
 		Version:   ModuleVersion,
 	}
-	refreshClaims := TokenClaims{
-		TokenID:   refreshID,
-		TokenType: TokenTypeRefresh,
-		Subject:   req.Subject,
-		IssuedAt:  now,
-		ExpiresAt: refreshExp,
-		Version:   ModuleVersion,
+	accessToken, err := s.accessFormat.Encode(accessClaims)
+	if err != nil {
+		return TokenPair{}, err
 	}
 
-	accessToken, err := s.format.Encode(accessClaims)
-	if err != nil {
-		return TokenPair{}, err
-	}
-	refreshToken, err := s.format.Encode(refreshClaims)
-	if err != nil {
-		return TokenPair{}, err
+	var (
+		refreshToken string
+		refreshID    string
+	)
+	if s.refreshFormat != nil {
+		refreshToken, refreshID, err = s.refreshFormat.Generate()
+		if err != nil {
+			return TokenPair{}, err
+		}
+	} else {
+		refreshID, err = s.random.NewID(s.config.TokenIDLength)
+		if err != nil {
+			return TokenPair{}, err
+		}
+		refreshClaims := TokenClaims{
+			TokenID:   refreshID,
+			TokenType: TokenTypeRefresh,
+			Subject:   req.Subject,
+			IssuedAt:  now,
+			ExpiresAt: refreshExp,
+			Version:   ModuleVersion,
+		}
+		refreshToken, err = s.claimsFormat.Encode(refreshClaims)
+		if err != nil {
+			return TokenPair{}, err
+		}
 	}
 
 	accessSession := AccessSession{
@@ -158,7 +221,7 @@ func (s *Service) IssueTokenPair(ctx context.Context, req IssueRequest) (TokenPa
 
 // ValidateAccessToken 校验 Access Token。
 func (s *Service) ValidateAccessToken(ctx context.Context, token string) (ValidateResult, error) {
-	claims, err := s.format.Decode(token)
+	claims, err := s.accessFormat.Decode(token)
 	if err != nil {
 		return ValidateResult{}, err
 	}
@@ -210,34 +273,63 @@ func (s *Service) ValidateBearerHeader(ctx context.Context, authorization string
 
 // RefreshAccessToken 使用 Refresh Token 换发新令牌。
 func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken string) (RefreshResult, error) {
-	claims, err := s.format.Decode(refreshToken)
-	if err != nil {
-		return RefreshResult{}, err
-	}
-	if claims.TokenType != TokenTypeRefresh {
-		return RefreshResult{}, ErrTokenTypeMismatch
-	}
-	if s.isExpired(claims.ExpiresAt) {
-		return RefreshResult{}, ErrTokenExpired
-	}
+	var (
+		refreshSession RefreshSession
+		refreshKey     string
+	)
 
-	refreshSession, err := s.store.GetRefreshSession(ctx, claims.TokenID)
-	if err != nil {
-		if errors.Is(err, ErrSessionNotFound) {
-			if s.config.RefreshPolicy == RefreshPolicyOneTimeRotation {
-				return RefreshResult{}, ErrRefreshTokenReplayed
-			}
-			return RefreshResult{}, ErrTokenRevoked
+	if s.refreshFormat != nil {
+		parsedID, err := s.refreshFormat.Parse(refreshToken)
+		if err != nil {
+			return RefreshResult{}, err
 		}
-		return RefreshResult{}, err
-	}
+		session, err := s.store.GetRefreshSession(ctx, parsedID)
+		if err != nil {
+			if errors.Is(err, ErrSessionNotFound) {
+				if s.config.RefreshPolicy == RefreshPolicyOneTimeRotation {
+					return RefreshResult{}, ErrRefreshTokenReplayed
+				}
+				return RefreshResult{}, ErrTokenRevoked
+			}
+			return RefreshResult{}, err
+		}
+		if s.isExpired(session.ExpiresAt) {
+			_ = s.store.DeleteRefreshSession(ctx, parsedID)
+			return RefreshResult{}, ErrTokenExpired
+		}
+		refreshSession = session
+		refreshKey = parsedID
+	} else {
+		claims, err := s.claimsFormat.Decode(refreshToken)
+		if err != nil {
+			return RefreshResult{}, err
+		}
+		if claims.TokenType != TokenTypeRefresh {
+			return RefreshResult{}, ErrTokenTypeMismatch
+		}
+		if s.isExpired(claims.ExpiresAt) {
+			return RefreshResult{}, ErrTokenExpired
+		}
 
-	if s.isExpired(refreshSession.ExpiresAt) {
-		_ = s.store.DeleteRefreshSession(ctx, claims.TokenID)
-		return RefreshResult{}, ErrTokenExpired
-	}
-	if refreshSession.Subject != claims.Subject {
-		return RefreshResult{}, ErrInvalidTokenFormat
+		session, err := s.store.GetRefreshSession(ctx, claims.TokenID)
+		if err != nil {
+			if errors.Is(err, ErrSessionNotFound) {
+				if s.config.RefreshPolicy == RefreshPolicyOneTimeRotation {
+					return RefreshResult{}, ErrRefreshTokenReplayed
+				}
+				return RefreshResult{}, ErrTokenRevoked
+			}
+			return RefreshResult{}, err
+		}
+		if s.isExpired(session.ExpiresAt) {
+			_ = s.store.DeleteRefreshSession(ctx, claims.TokenID)
+			return RefreshResult{}, ErrTokenExpired
+		}
+		if session.Subject != claims.Subject {
+			return RefreshResult{}, ErrInvalidTokenFormat
+		}
+		refreshSession = session
+		refreshKey = claims.TokenID
 	}
 
 	now := s.clock.Now().UTC()
@@ -255,7 +347,7 @@ func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken string) (
 		ExpiresAt: accessExp,
 		Version:   ModuleVersion,
 	}
-	accessToken, err := s.format.Encode(accessClaims)
+	accessToken, err := s.accessFormat.Encode(accessClaims)
 	if err != nil {
 		return RefreshResult{}, err
 	}
@@ -263,12 +355,35 @@ func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken string) (
 	rotated := false
 	newRefreshToken := refreshToken
 	newRefreshExp := refreshSession.ExpiresAt
-	refreshTokenID := refreshSession.TokenID
+	refreshTokenID := refreshKey
 
 	if s.shouldRotateRefresh(now, refreshSession.ExpiresAt) {
-		newRefreshID, genErr := s.random.NewID(s.config.TokenIDLength)
-		if genErr != nil {
-			return RefreshResult{}, genErr
+		var (
+			newRefreshTokenValue string
+			newRefreshID         string
+		)
+		if s.refreshFormat != nil {
+			newRefreshTokenValue, newRefreshID, err = s.refreshFormat.Generate()
+			if err != nil {
+				return RefreshResult{}, err
+			}
+		} else {
+			newRefreshID, err = s.random.NewID(s.config.TokenIDLength)
+			if err != nil {
+				return RefreshResult{}, err
+			}
+			refreshClaims := TokenClaims{
+				TokenID:   newRefreshID,
+				TokenType: TokenTypeRefresh,
+				Subject:   refreshSession.Subject,
+				IssuedAt:  now,
+				ExpiresAt: now.Add(s.config.RefreshTokenTTL),
+				Version:   ModuleVersion,
+			}
+			newRefreshTokenValue, err = s.claimsFormat.Encode(refreshClaims)
+			if err != nil {
+				return RefreshResult{}, err
+			}
 		}
 
 		newRefreshSession := RefreshSession{
@@ -281,7 +396,7 @@ func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken string) (
 
 		ok, rotateErr := s.store.RotateRefreshSession(
 			ctx,
-			refreshSession.TokenID,
+			refreshKey,
 			newRefreshID,
 			newRefreshSession,
 			ttlFrom(now, newRefreshSession.ExpiresAt),
@@ -296,25 +411,10 @@ func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken string) (
 			return RefreshResult{}, ErrTokenRevoked
 		}
 
-		refreshClaims := TokenClaims{
-			TokenID:   newRefreshID,
-			TokenType: TokenTypeRefresh,
-			Subject:   refreshSession.Subject,
-			IssuedAt:  newRefreshSession.IssuedAt,
-			ExpiresAt: newRefreshSession.ExpiresAt,
-			Version:   ModuleVersion,
-		}
-		encodedRefresh, encodeErr := s.format.Encode(refreshClaims)
-		if encodeErr != nil {
-			return RefreshResult{}, encodeErr
-		}
-
 		rotated = true
-		newRefreshToken = encodedRefresh
+		newRefreshToken = newRefreshTokenValue
 		newRefreshExp = newRefreshSession.ExpiresAt
 		refreshTokenID = newRefreshID
-	} else if s.config.RefreshPolicy == RefreshPolicyReuseUntilExpiry || s.config.RefreshPolicy == RefreshPolicyRotateNearExpiry {
-		// reuse 模式不轮换时保持原 refresh session。
 	}
 
 	accessSession := AccessSession{
@@ -340,7 +440,7 @@ func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken string) (
 
 // RevokeAccessToken 吊销 Access Token。
 func (s *Service) RevokeAccessToken(ctx context.Context, token string) error {
-	claims, err := s.format.Decode(token)
+	claims, err := s.accessFormat.Decode(token)
 	if err != nil {
 		return err
 	}
@@ -352,7 +452,15 @@ func (s *Service) RevokeAccessToken(ctx context.Context, token string) error {
 
 // RevokeRefreshToken 吊销 Refresh Token。
 func (s *Service) RevokeRefreshToken(ctx context.Context, token string) error {
-	claims, err := s.format.Decode(token)
+	if s.refreshFormat != nil {
+		id, err := s.refreshFormat.Parse(token)
+		if err != nil {
+			return err
+		}
+		return s.store.DeleteRefreshSession(ctx, id)
+	}
+
+	claims, err := s.claimsFormat.Decode(token)
 	if err != nil {
 		return err
 	}
@@ -364,7 +472,7 @@ func (s *Service) RevokeRefreshToken(ctx context.Context, token string) error {
 
 // RenewAccessToken 对活动 Access 会话执行续期。
 func (s *Service) RenewAccessToken(ctx context.Context, token string, ttl time.Duration) error {
-	claims, err := s.format.Decode(token)
+	claims, err := s.accessFormat.Decode(token)
 	if err != nil {
 		return err
 	}

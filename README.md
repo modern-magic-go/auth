@@ -13,6 +13,8 @@
 - **滑动过期** — 每次验证时可选择延长 Access Token 的 TTL。
 - **时钟偏移容差** — 为分布式系统提供可配置的偏移容差。
 - **可插拔适配器** — 内存存储用于测试，Redis 存储用于生产环境。
+- **标准 JWT（HS256）格式** — 可选的 `NewJWTHS256FormatAdapter`，与 `golang-jwt`、PHP `lcobucci/jwt` 互操作。
+- **access / refresh 格式分离** — JWT access + 不透明 refresh，refresh 仅以 SHA-256 哈希落库。
 - **完整的依赖注入** — Clock、随机源、序列化器和令牌格式均可替换。
 
 ## 安装
@@ -65,7 +67,59 @@ refreshed, _ := svc.RefreshAccessToken(ctx, pair.RefreshToken)
 svc.RevokeAccessToken(ctx, pair.AccessToken)
 ```
 
-完整示例请参见 [example/basic/main.go](example/basic/main.go) 和 [example/redis/main.go](example/redis/main.go)。
+完整示例请参见 [example/basic/main.go](example/basic/main.go)、[example/redis/main.go](example/redis/main.go) 和 [example/jwt_opaque/main.go](example/jwt_opaque/main.go)。
+
+## JWT 格式（HS256）
+
+默认格式和两段式签名格式都不是标准 JWT。需要与 PHP / 其他语言互操作时，注入
+`NewJWTHS256FormatAdapter`：
+
+```go
+jwtFormat := auth.NewJWTHS256FormatAdapter(
+    []byte("replace-with-32-byte-secret"),
+    auth.WithJWTIssuer("auth-service"),
+    auth.WithJWTAudience("admin-api"),
+    auth.WithJWTLeeway(30*time.Second), // 默认与服务默认 ClockSkew 一致
+)
+
+svc, err := auth.NewService(cfg, store,
+    auth.WithTokenFormat(jwtFormat), // access 与 refresh 都用 JWT
+)
+```
+
+- 输出标准三段式 JWT，`alg=HS256`、`typ=JWT`。
+- Payload 保留 `jti/typ/sub/iat/exp/ver`，`iss/aud` 按选项写入。
+- 外部系统签发 token 时必须包含 `jti/typ/sub/iat/exp/ver`，缺失或为空的 `ver`
+  会被拒绝。
+- `Decode` 拒绝 `alg=none`、非 HS256、错误签名、过期/未生效、错误 `iss/aud`。
+- `ver` 目前固定为 `ModuleVersion`，`typ` 只能是 `access` / `refresh`。
+- JWT 时间校验使用 `WithJWTClock`（默认真实时钟）；如果自定义了 `Config.ClockSkew`，请用
+  `WithJWTLeeway` 设置相同容差。
+
+跨语言互验见 [testdata/interop](testdata/interop)。
+
+## JWT access + 不透明 refresh
+
+推荐生产组合：access 用 JWT 给下游本地验签，refresh 保持不透明私有令牌：
+
+```go
+jwtFormat := auth.NewJWTHS256FormatAdapter(secret, auth.WithJWTIssuer("auth-service"))
+
+svc, err := auth.NewService(cfg, store,
+    auth.WithAccessTokenFormat(jwtFormat),
+    auth.WithOpaqueRefreshToken(), // 32 字节 crypto/rand，Base64URL（43 字符）
+)
+```
+
+- refresh token 不含 `.`，不能当 JWT 解析；`SessionStore` 只保存
+  `Base64URL(SHA-256(token))`。
+- `TokenIDLength` 只影响 `jti`，不影响不透明 refresh token 的固定 32 字节长度。
+- `ValidateResult.RefreshTokenID` 在不透明模式下是哈希 ID，**不是**可用于刷新的 token。
+- 轮换、并发单胜者、吊销与 claims 模式一致。
+- 需要自定义随机源（测试）时用 `auth.WithOpaqueRandomSource`。
+
+如果只设置 `WithAccessTokenFormat` 而不设置 refresh 格式，refresh 会继续使用 access
+格式（兼容默认语义）；要避免 JWT refresh，请显式加 `WithOpaqueRefreshToken()`。
 
 ## 架构
 

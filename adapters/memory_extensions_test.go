@@ -104,7 +104,7 @@ func TestMemoryStoreRefreshGrace(t *testing.T) {
 		NewTokenID:             "new",
 		SessionID:              "sid",
 		Subject:                "user",
-		AccessToken:            "access",
+		AccessTokenCiphertext:  "access-ciphertext",
 		RefreshTokenCiphertext: "ciphertext",
 		AccessExpiresAt:        now.Add(time.Minute),
 		RefreshExpiresAt:       now.Add(time.Hour),

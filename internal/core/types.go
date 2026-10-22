@@ -286,13 +286,13 @@ type RevocationStore interface {
 
 // RefreshGraceRecord 是轮换后宽限期内用于幂等重放的记录。
 //
-// RefreshTokenCiphertext 是加密后的 refresh token，存储层不会接触明文。
+// AccessTokenCiphertext 与 RefreshTokenCiphertext 都是加密后的 token，存储层不会接触明文。
 type RefreshGraceRecord struct {
 	OldTokenID             string    `json:"old_token_id"`
 	NewTokenID             string    `json:"new_token_id"`
 	SessionID              string    `json:"session_id"`
 	Subject                string    `json:"subject"`
-	AccessToken            string    `json:"access_token"`
+	AccessTokenCiphertext  string    `json:"access_token_ciphertext"`
 	RefreshTokenCiphertext string    `json:"refresh_token_ciphertext"`
 	AccessExpiresAt        time.Time `json:"access_expires_at"`
 	RefreshExpiresAt       time.Time `json:"refresh_expires_at"`

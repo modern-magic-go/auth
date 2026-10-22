@@ -56,4 +56,34 @@ func TestService_RevocationNotConfigured(t *testing.T) {
 
 	assert.ErrorIs(t, svc.RevokeSession(context.Background(), "sid", time.Minute), auth.ErrRevocationNotConfigured)
 	assert.ErrorIs(t, svc.RevokeSubject(context.Background(), "user", time.Minute), auth.ErrRevocationNotConfigured)
+
+	pair, err := svc.IssueTokenPair(context.Background(), auth.IssueRequest{Subject: "user"})
+	require.NoError(t, err)
+	assert.ErrorIs(t, svc.Logout(context.Background(), pair.AccessToken, time.Minute), auth.ErrRevocationNotConfigured)
+}
+
+func TestService_LogoutInvalidatesOldAccessTokens(t *testing.T) {
+	clk := newFakeClock(time.Date(2026, 3, 18, 0, 0, 0, 0, time.UTC))
+	revocation := adapters.NewMemoryRevocationStore()
+	svc, err := auth.NewService(
+		auth.DefaultConfig(),
+		adapters.NewMemoryStore(),
+		auth.WithClock(clk),
+		auth.WithRandomSource(&fakeRandomSource{}),
+		auth.WithRevocationStore(revocation),
+	)
+	require.NoError(t, err)
+
+	pair, err := svc.IssueTokenPair(context.Background(), auth.IssueRequest{Subject: "user"})
+	require.NoError(t, err)
+	refreshed, err := svc.RefreshAccessToken(context.Background(), pair.RefreshToken)
+	require.NoError(t, err)
+
+	require.NoError(t, svc.Logout(context.Background(), refreshed.AccessToken, time.Hour))
+	_, err = svc.ValidateAccessToken(context.Background(), pair.AccessToken)
+	assert.ErrorIs(t, err, auth.ErrTokenRevoked)
+	_, err = svc.ValidateAccessToken(context.Background(), refreshed.AccessToken)
+	assert.ErrorIs(t, err, auth.ErrTokenRevoked)
+	_, err = svc.RefreshAccessToken(context.Background(), refreshed.RefreshToken)
+	assert.ErrorIs(t, err, auth.ErrTokenRevoked)
 }

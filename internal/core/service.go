@@ -732,7 +732,11 @@ func (s *Service) RevokeRefreshToken(ctx context.Context, token string) error {
 }
 
 // Logout 完整注销一个会话：清理 session/索引并写入 denylist。
+// 必须配置 RevocationStore，否则返回 ErrRevocationNotConfigured。
 func (s *Service) Logout(ctx context.Context, token string, ttl time.Duration) error {
+	if s.revocationStore == nil {
+		return ErrRevocationNotConfigured
+	}
 	if claims, err := s.accessFormat.Decode(token); err == nil && claims.TokenType == TokenTypeAccess {
 		return s.logoutAccess(ctx, claims, ttl)
 	}
@@ -787,6 +791,9 @@ func (s *Service) logoutRefresh(ctx context.Context, refreshKey string, ttl time
 	}
 	if getErr != nil && !errors.Is(getErr, ErrSessionNotFound) {
 		return getErr
+	}
+	if getErr != nil {
+		return ErrSessionNotFound
 	}
 	if session.SessionID != "" && s.revocationStore != nil {
 		if err := s.RevokeSession(ctx, session.SessionID, ttl); err != nil {

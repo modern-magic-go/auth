@@ -56,7 +56,7 @@ func TestRedisStoreRefreshGrace(t *testing.T) {
 		NewTokenID:             "new",
 		SessionID:              "sid",
 		Subject:                "user",
-		AccessToken:            "access",
+		AccessTokenCiphertext:  "access-ciphertext",
 		RefreshTokenCiphertext: "ciphertext",
 		AccessExpiresAt:        time.Now().UTC().Add(time.Minute),
 		RefreshExpiresAt:       time.Now().UTC().Add(time.Hour),

@@ -57,11 +57,11 @@ func (s *RedisStore) CreateSession(ctx context.Context, access auth.AccessSessio
 		ExpiresAt:      refresh.ExpiresAt,
 	}
 	record := s.newSessionRecord(keys, ref)
-	accessJSON, err := json.Marshal(access)
+	accessJSON, err := s.serializer.Marshal(access)
 	if err != nil {
 		return nil, err
 	}
-	refreshJSON, err := json.Marshal(refresh)
+	refreshJSON, err := s.serializer.Marshal(refresh)
 	if err != nil {
 		return nil, err
 	}
@@ -106,9 +106,9 @@ return removed`,
 			s.refsKey(access.Subject, keys),
 		},
 		seconds(accessTTL),
-		string(accessJSON),
+		accessJSON,
 		seconds(refreshTTL),
-		string(refreshJSON),
+		refreshJSON,
 		string(recordJSON),
 		sessionID,
 		access.IssuedAt.UnixNano(),
@@ -238,7 +238,7 @@ func (s *RedisStore) RotateRefreshSessionWithIndex(ctx context.Context, oldToken
 	if err != nil {
 		return false, err
 	}
-	sessionJSON, err := json.Marshal(newSession)
+	sessionJSON, err := s.serializer.Marshal(newSession)
 	if err != nil {
 		return false, err
 	}
@@ -262,7 +262,7 @@ return 1`,
 			keys.SubjectSessionsKey(newRef.Subject),
 		},
 		seconds(ttl),
-		string(sessionJSON),
+		sessionJSON,
 		string(recordJSON),
 		newRef.SessionID,
 		newRef.IssuedAt.UnixNano(),
@@ -322,7 +322,7 @@ func (s *RedisStore) RotateRefreshSessionWithGrace(ctx context.Context, oldToken
 	if err != nil {
 		return false, err
 	}
-	sessionJSON, err := json.Marshal(newSession)
+	sessionJSON, err := s.serializer.Marshal(newSession)
 	if err != nil {
 		return false, err
 	}
@@ -344,7 +344,7 @@ return 1`,
 			keys.RefreshGraceKey(oldTokenID),
 		},
 		seconds(sessionTTL),
-		string(sessionJSON),
+		sessionJSON,
 		seconds(graceTTL),
 		string(graceJSON),
 	)

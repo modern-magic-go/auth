@@ -196,6 +196,8 @@ svc, _ := auth.NewService(cfg, indexedStore,
 - 登录时原子完成「写会话 + 写索引 + 裁剪」，按 `IssuedAt` 踢最旧。
 - 被踢会话的 session 会被删除；无状态 access token 需要通过回调写 denylist。
 - 完整登出使用 `svc.Logout(ctx, accessToken, 0)`：清理 access/refresh/session 索引并写入 denylist。
+  `Logout` 必须配置 `RevocationStore`，否则返回 `ErrRevocationNotConfigured`；
+  `RevokeAccessToken` 仅吊销当前 access，`RevokeSession` 仅写 denylist，都不等同于完整登出。
 
 ### 比例轮换与刷新宽限
 
@@ -210,7 +212,7 @@ svc, _ := auth.NewService(cfg, store,
 
 - `RotateNearExpiryRatio` 按会话自身寿命计算；为 0 时继续使用 `RotateNearExpiry`。
 - `RefreshGracePeriod` 需要存储实现 `RefreshGraceStore` + `GraceRotationStore`。
-- grace 记录中的 refresh token 使用 AES-GCM 加密，密钥必须正好 32 字节。
+- grace 记录中的 refresh token 与 access token 都使用 AES-GCM 加密，密钥必须正好 32 字节。
 - 宽限期内重复刷新返回同一对 token；超过宽限期后旧 token 失效。
 - grace 重放同样会检查 revocation store。
 

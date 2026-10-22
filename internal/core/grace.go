@@ -17,7 +17,11 @@ func (s *Service) buildGraceRecord(
 	oldTokenID, newTokenID, sessionID, subject, accessToken, refreshToken string,
 	accessExpiresAt, refreshExpiresAt time.Time,
 ) (RefreshGraceRecord, error) {
-	ciphertext, err := encryptGraceToken(s.graceKey, refreshToken)
+	accessCiphertext, err := encryptGraceToken(s.graceKey, accessToken)
+	if err != nil {
+		return RefreshGraceRecord{}, err
+	}
+	refreshCiphertext, err := encryptGraceToken(s.graceKey, refreshToken)
 	if err != nil {
 		return RefreshGraceRecord{}, err
 	}
@@ -26,8 +30,8 @@ func (s *Service) buildGraceRecord(
 		NewTokenID:             newTokenID,
 		SessionID:              sessionID,
 		Subject:                subject,
-		AccessToken:            accessToken,
-		RefreshTokenCiphertext: ciphertext,
+		AccessTokenCiphertext:  accessCiphertext,
+		RefreshTokenCiphertext: refreshCiphertext,
 		AccessExpiresAt:        accessExpiresAt,
 		RefreshExpiresAt:       refreshExpiresAt,
 	}, nil
@@ -57,11 +61,15 @@ func (s *Service) replayFromGrace(ctx context.Context, _ string, oldTokenID stri
 	if err != nil {
 		return RefreshResult{}, false, err
 	}
-	if record.AccessToken == "" || refreshToken == "" {
+	accessToken, err := decryptGraceToken(s.graceKey, record.AccessTokenCiphertext)
+	if err != nil {
+		return RefreshResult{}, false, err
+	}
+	if accessToken == "" || refreshToken == "" {
 		return RefreshResult{}, false, ErrInvalidTokenFormat
 	}
 	return RefreshResult{
-		AccessToken:   record.AccessToken,
+		AccessToken:   accessToken,
 		RefreshToken:  refreshToken,
 		AccessExpiry:  record.AccessExpiresAt,
 		RefreshExpiry: record.RefreshExpiresAt,

@@ -2,7 +2,9 @@ package redisinterop
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +15,23 @@ import (
 
 type redisClient struct {
 	rdb *redis.Client
+}
+
+type prefixSerializer struct{}
+
+func (prefixSerializer) Marshal(value any) (string, error) {
+	bytes, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return "S:" + string(bytes), nil
+}
+
+func (prefixSerializer) Unmarshal(data string, value any) error {
+	if !strings.HasPrefix(data, "S:") {
+		return fmt.Errorf("missing serializer prefix")
+	}
+	return json.Unmarshal([]byte(strings.TrimPrefix(data, "S:")), value)
 }
 
 func (c *redisClient) Get(key string) (string, error) {
@@ -136,7 +155,10 @@ func TestRedisIndexMaxSessionsAndSessionKeyCleanup(t *testing.T) {
 
 func TestServiceLogoutCleansIndex(t *testing.T) {
 	rdb, prefix := newRedis(t)
-	store := newStore(rdb, prefix)
+	client := &redisClient{rdb: rdb}
+	keys := adapters.NewPrefixedKeyStrategy(prefix)
+	store := adapters.NewRedisStore(client, adapters.RedisStoreConfig{KeyStrategy: keys})
+	revocation := adapters.NewRedisRevocationStore(client, keys)
 	ctx := context.Background()
 	svc, err := auth.NewService(
 		auth.Config{
@@ -146,6 +168,7 @@ func TestServiceLogoutCleansIndex(t *testing.T) {
 			MaxSessionsPerSubject: 2,
 		},
 		store,
+		auth.WithRevocationStore(revocation),
 	)
 	if err != nil {
 		t.Fatalf("new service: %v", err)
@@ -179,6 +202,83 @@ func TestServiceLogoutCleansIndex(t *testing.T) {
 	}
 	if _, err := svc.ValidateAccessToken(ctx, second.AccessToken); err != nil {
 		t.Fatalf("other session should stay valid: %v", err)
+	}
+}
+
+func TestRedisStoreUsesConfiguredSerializer(t *testing.T) {
+	rdb, prefix := newRedis(t)
+	client := &redisClient{rdb: rdb}
+	keys := adapters.NewPrefixedKeyStrategy(prefix)
+	store := adapters.NewRedisStore(client, adapters.RedisStoreConfig{
+		KeyStrategy: keys,
+		Serializer:  prefixSerializer{},
+	})
+	ctx := context.Background()
+
+	svc, err := auth.NewService(
+		auth.Config{
+			AccessTokenTTL:        5 * time.Minute,
+			RefreshTokenTTL:       time.Hour,
+			RefreshPolicy:         auth.RefreshPolicyOneTimeRotation,
+			MaxSessionsPerSubject: 2,
+		},
+		store,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	pair, err := svc.IssueTokenPair(ctx, auth.IssueRequest{Subject: "u"})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	if _, err := svc.ValidateAccessToken(ctx, pair.AccessToken); err != nil {
+		t.Fatalf("validate after CreateSession: %v", err)
+	}
+	refreshed, err := svc.RefreshAccessToken(ctx, pair.RefreshToken)
+	if err != nil {
+		t.Fatalf("refresh after CreateSession: %v", err)
+	}
+	if _, err := svc.ValidateAccessToken(ctx, refreshed.AccessToken); err != nil {
+		t.Fatalf("validate after index rotation: %v", err)
+	}
+}
+
+func TestRedisStoreGraceUsesConfiguredSerializer(t *testing.T) {
+	rdb, prefix := newRedis(t)
+	client := &redisClient{rdb: rdb}
+	keys := adapters.NewPrefixedKeyStrategy(prefix)
+	store := adapters.NewRedisStore(client, adapters.RedisStoreConfig{
+		KeyStrategy: keys,
+		Serializer:  prefixSerializer{},
+	})
+	ctx := context.Background()
+
+	svc, err := auth.NewService(
+		auth.Config{
+			AccessTokenTTL:        5 * time.Minute,
+			RefreshTokenTTL:       time.Hour,
+			RefreshPolicy:         auth.RefreshPolicyOneTimeRotation,
+			RefreshGracePeriod:    time.Minute,
+			MaxSessionsPerSubject: 2,
+		},
+		store,
+		auth.WithGraceEncryptionKey([]byte("0123456789abcdef0123456789abcdef")),
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	pair, err := svc.IssueTokenPair(ctx, auth.IssueRequest{Subject: "u"})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	refreshed, err := svc.RefreshAccessToken(ctx, pair.RefreshToken)
+	if err != nil {
+		t.Fatalf("refresh with grace: %v", err)
+	}
+	if _, err := svc.ValidateAccessToken(ctx, refreshed.AccessToken); err != nil {
+		t.Fatalf("validate after grace rotation: %v", err)
 	}
 }
 

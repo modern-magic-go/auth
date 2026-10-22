@@ -156,6 +156,11 @@ func NewService(cfg Config, store SessionStore, opts ...Option) (*Service, error
 	if s.clock == nil || s.random == nil {
 		return nil, ErrInvalidConfig
 	}
+	if s.refreshSet && !s.accessSet && !s.legacySet {
+		// 只配置 refresh 格式会让 access 静默退回无签名默认格式；
+		// 要求调用方显式选择 access 格式，避免 stateful 下误发非 JWT token。
+		return nil, ErrInvalidConfig
+	}
 	if s.config.AccessTokenMode != AccessTokenStateful && s.config.AccessTokenMode != AccessTokenStateless {
 		return nil, ErrInvalidConfig
 	}
@@ -695,40 +700,123 @@ func (s *Service) RevokeAccessToken(ctx context.Context, token string) error {
 	return s.store.DeleteAccessSession(ctx, claims.TokenID)
 }
 
-// RevokeRefreshToken 吊销 Refresh Token。
+// RevokeRefreshToken 吊销 Refresh Token；若是已轮换的旧 token，会跟进 grace 记录。
 func (s *Service) RevokeRefreshToken(ctx context.Context, token string) error {
-	var refreshKey string
-	if s.refreshFormat != nil {
-		id, err := s.refreshFormat.Parse(token)
-		if err != nil {
-			return err
-		}
-		refreshKey = id
-	} else {
-		claims, err := s.claimsFormat.Decode(token)
-		if err != nil {
-			return err
-		}
-		if claims.TokenType != TokenTypeRefresh {
-			return ErrTokenTypeMismatch
-		}
-		refreshKey = claims.TokenID
+	refreshKey, err := s.parseRefreshID(token)
+	if err != nil {
+		return err
 	}
 
+	graceKey := ""
 	session, getErr := s.store.GetRefreshSession(ctx, refreshKey)
+	if getErr != nil && errors.Is(getErr, ErrSessionNotFound) && s.graceStore != nil {
+		if record, graceErr := s.graceStore.GetRefreshGrace(ctx, refreshKey); graceErr == nil {
+			graceKey = refreshKey
+			refreshKey = record.NewTokenID
+			session, getErr = s.store.GetRefreshSession(ctx, refreshKey)
+		}
+	}
 	if getErr != nil && !errors.Is(getErr, ErrSessionNotFound) {
 		return getErr
 	}
 	if err := s.store.DeleteRefreshSession(ctx, refreshKey); err != nil {
 		return err
 	}
-	if s.graceStore != nil {
-		_ = s.graceStore.DeleteRefreshGrace(ctx, refreshKey)
+	if graceKey != "" {
+		_ = s.graceStore.DeleteRefreshGrace(ctx, graceKey)
 	}
 	if getErr == nil && s.indexedStore != nil && session.SessionID != "" {
 		return s.indexedStore.RemoveSession(ctx, session.Subject, session.SessionID)
 	}
 	return nil
+}
+
+// Logout 完整注销一个会话：清理 session/索引并写入 denylist。
+func (s *Service) Logout(ctx context.Context, token string, ttl time.Duration) error {
+	if claims, err := s.accessFormat.Decode(token); err == nil && claims.TokenType == TokenTypeAccess {
+		return s.logoutAccess(ctx, claims, ttl)
+	}
+	if s.refreshFormat != nil {
+		if id, err := s.refreshFormat.Parse(token); err == nil {
+			return s.logoutRefresh(ctx, id, ttl)
+		}
+	} else if claims, err := s.claimsFormat.Decode(token); err == nil && claims.TokenType == TokenTypeRefresh {
+		return s.logoutRefresh(ctx, claims.TokenID, ttl)
+	}
+	return ErrInvalidTokenFormat
+}
+
+func (s *Service) logoutAccess(ctx context.Context, claims TokenClaims, ttl time.Duration) error {
+	if s.config.AccessTokenMode == AccessTokenStateless && claims.SessionID == "" {
+		return ErrSessionIDRequired
+	}
+	if claims.SessionID != "" && s.revocationStore != nil {
+		if err := s.RevokeSession(ctx, claims.SessionID, ttl); err != nil {
+			return err
+		}
+	}
+	if s.indexedStore != nil && claims.SessionID != "" {
+		return s.indexedStore.RemoveSession(ctx, claims.Subject, claims.SessionID)
+	}
+
+	session, getErr := s.store.GetAccessSession(ctx, claims.TokenID)
+	if getErr != nil && !errors.Is(getErr, ErrSessionNotFound) {
+		return getErr
+	}
+	if err := s.store.DeleteAccessSession(ctx, claims.TokenID); err != nil {
+		return err
+	}
+	if getErr == nil && session.RefreshTokenID != "" {
+		return s.store.DeleteRefreshSession(ctx, session.RefreshTokenID)
+	}
+	if s.config.AccessTokenMode == AccessTokenStateless && s.revocationStore == nil {
+		return ErrRevocationNotConfigured
+	}
+	return nil
+}
+
+func (s *Service) logoutRefresh(ctx context.Context, refreshKey string, ttl time.Duration) error {
+	session, getErr := s.store.GetRefreshSession(ctx, refreshKey)
+	graceKey := ""
+	if getErr != nil && errors.Is(getErr, ErrSessionNotFound) && s.graceStore != nil {
+		if record, graceErr := s.graceStore.GetRefreshGrace(ctx, refreshKey); graceErr == nil {
+			graceKey = refreshKey
+			refreshKey = record.NewTokenID
+			session, getErr = s.store.GetRefreshSession(ctx, refreshKey)
+		}
+	}
+	if getErr != nil && !errors.Is(getErr, ErrSessionNotFound) {
+		return getErr
+	}
+	if session.SessionID != "" && s.revocationStore != nil {
+		if err := s.RevokeSession(ctx, session.SessionID, ttl); err != nil {
+			return err
+		}
+	}
+	if err := s.store.DeleteRefreshSession(ctx, refreshKey); err != nil {
+		return err
+	}
+	if graceKey != "" {
+		_ = s.graceStore.DeleteRefreshGrace(ctx, graceKey)
+	}
+	if s.indexedStore != nil && session.SessionID != "" {
+		return s.indexedStore.RemoveSession(ctx, session.Subject, session.SessionID)
+	}
+	return nil
+}
+
+func (s *Service) parseRefreshID(token string) (string, error) {
+	if s.refreshFormat != nil {
+		return s.refreshFormat.Parse(token)
+	}
+	claims, err := s.claimsFormat.Decode(token)
+	if err != nil {
+		return "", err
+	}
+	if claims.TokenType != TokenTypeRefresh {
+		return "", ErrTokenTypeMismatch
+	}
+	return claims.TokenID, nil
 }
 
 // RevokeSession 按稳定 SessionID 吊销一个会话（需要 RevocationStore）。
@@ -752,6 +840,17 @@ func (s *Service) RevokeSubject(ctx context.Context, subject string, ttl time.Du
 	}
 	if subject == "" {
 		return ErrInvalidConfig
+	}
+	if s.indexedStore != nil {
+		refs, err := s.indexedStore.ListBySubject(ctx, subject)
+		if err != nil {
+			return err
+		}
+		for _, ref := range refs {
+			if err := s.indexedStore.RemoveSession(ctx, subject, ref.SessionID); err != nil {
+				return err
+			}
+		}
 	}
 	if ttl <= 0 {
 		ttl = s.defaultRevocationTTL()

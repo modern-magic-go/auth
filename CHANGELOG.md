@@ -33,6 +33,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 新增 `ExtendedKeyStrategy`，覆盖 session 索引、grace 与吊销 key；默认
   `NewPrefixedKeyStrategy` 已实现。
 
+### Fixed
+
+- 修复 `WithOpaqueRefreshToken()` 单独使用时 access 静默退回非签名默认格式：现在返回
+  `ErrInvalidConfig`，必须显式选择 access 格式。
+- 修复不透明 refresh token 带 Base64 padding 时 SHA-256 ID 不一致的问题，统一按
+  解码后的 RawURL 字符串计算。
+- 修复 RedisStore 会话索引：过期 ref 清理、登出/吊销同步清理索引、session key
+  落库、UnixNano 排序，以及 Create/Touch/Remove/轮换更新索引改为单条 Lua。
+- 新增 `Logout` API：完整清理 access/refresh/session 索引并写入 denylist。
+
 ## [v1.0.0] - 2026-04-07
 
 ### Added

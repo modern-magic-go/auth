@@ -80,6 +80,10 @@ func TestOpaqueRefreshTokenFormat(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, id, parsedID)
 
+	paddedID, err := format.Parse(token + "=")
+	require.NoError(t, err)
+	assert.Equal(t, id, paddedID)
+
 	nextToken, nextID, err := format.Generate()
 	require.NoError(t, err)
 	assert.Equal(t, second, nextToken)
@@ -100,6 +104,26 @@ func TestOpaqueRefreshTokenFormat(t *testing.T) {
 	)
 	_, _, err = broken.Generate()
 	assert.ErrorIs(t, err, auth.ErrInvalidTokenFormat)
+}
+
+func TestService_OpaqueRefreshRequiresExplicitAccessFormat(t *testing.T) {
+	clk := newFakeClock(time.Date(2026, 3, 18, 0, 0, 0, 0, time.UTC))
+	_, err := auth.NewService(
+		auth.Config{},
+		adapters.NewMemoryStore(),
+		auth.WithClock(clk),
+		auth.WithOpaqueRefreshToken(),
+	)
+	assert.ErrorIs(t, err, auth.ErrInvalidConfig)
+
+	_, err = auth.NewService(
+		auth.Config{},
+		adapters.NewMemoryStore(),
+		auth.WithClock(clk),
+		auth.WithTokenFormat(auth.NewDefaultTokenFormatAdapter()),
+		auth.WithOpaqueRefreshToken(),
+	)
+	require.NoError(t, err)
 }
 
 func TestService_JWTAndOpaqueRefresh(t *testing.T) {
@@ -176,6 +200,7 @@ func TestService_OpaqueRefreshReuseAndRevoke(t *testing.T) {
 		adapters.NewMemoryStore(),
 		auth.WithClock(clk),
 		auth.WithRandomSource(&fakeRandomSource{}),
+		auth.WithTokenFormat(auth.NewDefaultTokenFormatAdapter()),
 		auth.WithOpaqueRefreshToken(
 			auth.WithOpaqueRandomSource(&sequenceRandomSource{values: []string{refreshTokenValue}}),
 		),
@@ -206,6 +231,7 @@ func TestService_OpaqueRefreshExpired(t *testing.T) {
 		adapters.NewMemoryStore(),
 		auth.WithClock(clk),
 		auth.WithRandomSource(&fakeRandomSource{}),
+		auth.WithTokenFormat(auth.NewDefaultTokenFormatAdapter()),
 		auth.WithOpaqueRefreshToken(
 			auth.WithOpaqueRandomSource(&sequenceRandomSource{values: []string{opaqueRefreshTestToken(40)}}),
 		),
@@ -286,6 +312,7 @@ func TestService_OpaqueRefreshConcurrentSingleWinner(t *testing.T) {
 		adapters.NewMemoryStore(),
 		auth.WithClock(clk),
 		auth.WithRandomSource(&fakeRandomSource{}),
+		auth.WithTokenFormat(auth.NewDefaultTokenFormatAdapter()),
 		auth.WithOpaqueRefreshToken(
 			auth.WithOpaqueRandomSource(&sequenceRandomSource{values: []string{
 				opaqueRefreshTestToken(50),
@@ -339,6 +366,7 @@ func TestService_OpaqueRefreshStoresOnlyHash(t *testing.T) {
 		store,
 		auth.WithClock(clk),
 		auth.WithRandomSource(&fakeRandomSource{}),
+		auth.WithTokenFormat(auth.NewDefaultTokenFormatAdapter()),
 		auth.WithOpaqueRefreshToken(
 			auth.WithOpaqueRandomSource(&sequenceRandomSource{values: []string{refreshTokenValue}}),
 		),

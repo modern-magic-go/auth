@@ -55,14 +55,15 @@ func (f *opaqueRefreshTokenFormat) Generate() (string, string, error) {
 	if _, err := decodeOpaqueRefreshToken(token); err != nil {
 		return "", "", err
 	}
-	return token, opaqueRefreshTokenID(token), nil
+	id, err := opaqueRefreshTokenID(token)
+	if err != nil {
+		return "", "", err
+	}
+	return token, id, nil
 }
 
 func (f *opaqueRefreshTokenFormat) Parse(token string) (string, error) {
-	if _, err := decodeOpaqueRefreshToken(token); err != nil {
-		return "", err
-	}
-	return opaqueRefreshTokenID(token), nil
+	return opaqueRefreshTokenID(token)
 }
 
 func decodeOpaqueRefreshToken(token string) ([]byte, error) {
@@ -79,7 +80,12 @@ func decodeOpaqueRefreshToken(token string) ([]byte, error) {
 	return decoded, nil
 }
 
-func opaqueRefreshTokenID(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return base64.RawURLEncoding.EncodeToString(sum[:])
+func opaqueRefreshTokenID(token string) (string, error) {
+	decoded, err := decodeOpaqueRefreshToken(token)
+	if err != nil {
+		return "", err
+	}
+	canonical := base64.RawURLEncoding.EncodeToString(decoded)
+	sum := sha256.Sum256([]byte(canonical))
+	return base64.RawURLEncoding.EncodeToString(sum[:]), nil
 }

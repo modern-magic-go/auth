@@ -124,6 +124,10 @@ svc, err := auth.NewService(cfg, store,
 如果只设置 `WithAccessTokenFormat` 而不设置 refresh 格式，refresh 会继续使用 access
 格式（兼容默认语义）；要避免 JWT refresh，请显式加 `WithOpaqueRefreshToken()`。
 
+反过来，只设置 `WithOpaqueRefreshToken()` 而不指定 access 格式会返回
+`ErrInvalidConfig`，避免 stateful 模式下静默发出非签名 access token；可以使用
+`WithAccessTokenFormat(jwtFormat)` 或显式 `WithTokenFormat(defaultFormat)`。
+
 ## 自定义 claims 与稳定 SessionID
 
 ```go
@@ -191,6 +195,7 @@ svc, _ := auth.NewService(cfg, indexedStore,
 - 需要存储实现 `IndexedSessionStore`；`MemoryStore` 与 `RedisStore` 已实现。
 - 登录时原子完成「写会话 + 写索引 + 裁剪」，按 `IssuedAt` 踢最旧。
 - 被踢会话的 session 会被删除；无状态 access token 需要通过回调写 denylist。
+- 完整登出使用 `svc.Logout(ctx, accessToken, 0)`：清理 access/refresh/session 索引并写入 denylist。
 
 ### 比例轮换与刷新宽限
 
@@ -232,6 +237,18 @@ auth:revoked:subject:<sub>
 ```
 
 新存储适配器（索引、grace、吊销）要求扩展策略；已有的自定义 `KeyStrategy` 仍可用于 access/refresh。Redis Cluster 场景需要用 hash tag 保证索引/session key 同槽。
+
+## 集成测试
+
+```bash
+# golang-jwt / PHP 互验（独立 module）
+cd testdata/interop && go test ./...
+
+# 真实 Redis 索引/登出/grace（需要 127.0.0.1:6379）
+cd testdata/redisinterop && go test ./...
+```
+
+`testdata/redisinterop` 使用独立 `go.mod` 和 `go-redis`，不会进入主模块依赖。
 
 ## 架构
 

@@ -102,6 +102,7 @@ func TestService_OpaqueRefreshPreservesClaimsAndVersion(t *testing.T) {
 		adapters.NewMemoryStore(),
 		auth.WithClock(clk),
 		auth.WithRandomSource(&fakeRandomSource{}),
+		auth.WithTokenFormat(auth.NewDefaultTokenFormatAdapter()),
 		auth.WithOpaqueRefreshToken(
 			auth.WithOpaqueRandomSource(&sequenceRandomSource{values: []string{
 				opaqueRefreshTestToken(70),

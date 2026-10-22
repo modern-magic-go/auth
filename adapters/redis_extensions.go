@@ -4,10 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/modern-magic-go/auth"
 )
+
+type redisSessionRecord struct {
+	Ref        auth.SessionRef `json:"ref"`
+	AccessKey  string          `json:"access_key"`
+	RefreshKey string          `json:"refresh_key"`
+	SessionKey string          `json:"session_key"`
+}
 
 func (s *RedisStore) extendedKeys() (ExtendedKeyStrategy, error) {
 	keys, ok := s.keyStrategy.(ExtendedKeyStrategy)
@@ -17,7 +25,20 @@ func (s *RedisStore) extendedKeys() (ExtendedKeyStrategy, error) {
 	return keys, nil
 }
 
-// CreateSession 保存 access/refresh 会话并维护 subject 排序索引。
+func (s *RedisStore) refsKey(subject string, keys ExtendedKeyStrategy) string {
+	return keys.SubjectSessionsKey(subject) + ":refs"
+}
+
+func (s *RedisStore) newSessionRecord(keys ExtendedKeyStrategy, ref auth.SessionRef) redisSessionRecord {
+	return redisSessionRecord{
+		Ref:        ref,
+		AccessKey:  keys.AccessKey(ref.AccessTokenID),
+		RefreshKey: keys.RefreshKey(ref.RefreshTokenID),
+		SessionKey: keys.SessionKey(ref.SessionID),
+	}
+}
+
+// CreateSession 原子保存 access/refresh 会话、session 记录、subject 索引并裁剪。
 func (s *RedisStore) CreateSession(ctx context.Context, access auth.AccessSession, refresh auth.RefreshSession, accessTTL, refreshTTL time.Duration, maxPerSubject int) ([]auth.SessionRef, error) {
 	keys, err := s.extendedKeys()
 	if err != nil {
@@ -35,6 +56,7 @@ func (s *RedisStore) CreateSession(ctx context.Context, access auth.AccessSessio
 		IssuedAt:       access.IssuedAt,
 		ExpiresAt:      refresh.ExpiresAt,
 	}
+	record := s.newSessionRecord(keys, ref)
 	accessJSON, err := json.Marshal(access)
 	if err != nil {
 		return nil, err
@@ -43,7 +65,7 @@ func (s *RedisStore) CreateSession(ctx context.Context, access auth.AccessSessio
 	if err != nil {
 		return nil, err
 	}
-	refJSON, err := json.Marshal(ref)
+	recordJSON, err := json.Marshal(record)
 	if err != nil {
 		return nil, err
 	}
@@ -51,87 +73,124 @@ func (s *RedisStore) CreateSession(ctx context.Context, access auth.AccessSessio
 	result, err := s.client.Eval(
 		`redis.call("SETEX", KEYS[1], ARGV[1], ARGV[2])
 redis.call("SETEX", KEYS[2], ARGV[3], ARGV[4])
-redis.call("ZADD", KEYS[3], ARGV[5], ARGV[6])
+redis.call("SETEX", KEYS[3], ARGV[3], ARGV[5])
+redis.call("HSET", KEYS[5], ARGV[6], ARGV[5])
+redis.call("ZADD", KEYS[4], ARGV[7], ARGV[6])
 local removed = {}
-if tonumber(ARGV[7]) > 0 then
-  removed = redis.call("ZRANGE", KEYS[3], 0, -(tonumber(ARGV[7]) + 1))
-  if #removed > 0 then
-    redis.call("ZREM", KEYS[3], unpack(removed))
+local max = tonumber(ARGV[8])
+if max > 0 then
+  local evicted = redis.call("ZRANGE", KEYS[4], 0, -(max + 1))
+  for _, sid in ipairs(evicted) do
+    local rec = redis.call("HGET", KEYS[5], sid)
+    if rec then
+      local ok, decoded = pcall(cjson.decode, rec)
+      if ok then
+        redis.call("DEL", decoded.access_key, decoded.refresh_key, decoded.session_key)
+      end
+      table.insert(removed, rec)
+      redis.call("HDEL", KEYS[5], sid)
+    end
+  end
+  if #evicted > 0 then
+    redis.call("ZREM", KEYS[4], unpack(evicted))
   end
 end
-redis.call("EXPIRE", KEYS[3], ARGV[8])
+redis.call("EXPIRE", KEYS[4], ARGV[9])
+redis.call("EXPIRE", KEYS[5], ARGV[9])
 return removed`,
 		[]string{
 			keys.AccessKey(access.TokenID),
 			keys.RefreshKey(refresh.TokenID),
+			keys.SessionKey(sessionID),
 			keys.SubjectSessionsKey(access.Subject),
+			s.refsKey(access.Subject, keys),
 		},
 		seconds(accessTTL),
 		string(accessJSON),
 		seconds(refreshTTL),
 		string(refreshJSON),
-		access.IssuedAt.Unix(),
-		string(refJSON),
+		string(recordJSON),
+		sessionID,
+		access.IssuedAt.UnixNano(),
 		maxPerSubject,
 		seconds(refreshTTL),
 	)
 	if err != nil {
 		return nil, err
 	}
-	return parseSessionRefs(result)
+	return parseEvictedRefs(result)
 }
 
-// ListBySubject 返回 subject 的会话索引。
+// ListBySubject 返回有效会话，并顺手清理已过期的索引记录。
 func (s *RedisStore) ListBySubject(ctx context.Context, subject string) ([]auth.SessionRef, error) {
 	keys, err := s.extendedKeys()
 	if err != nil {
 		return nil, err
 	}
 	result, err := s.client.Eval(
-		`return redis.call("ZRANGE", KEYS[1], 0, -1)`,
-		[]string{keys.SubjectSessionsKey(subject)},
+		`return redis.call("HGETALL", KEYS[1])`,
+		[]string{s.refsKey(subject, keys)},
 	)
 	if err != nil {
 		return nil, err
 	}
-	return parseSessionRefs(result)
+	values, err := toStringSlice(result)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	refs := make([]auth.SessionRef, 0, len(values)/2)
+	for index := 0; index+1 < len(values); index += 2 {
+		sessionID := values[index]
+		var record redisSessionRecord
+		if err := json.Unmarshal([]byte(values[index+1]), &record); err != nil {
+			_ = s.removeSession(ctx, keys, subject, sessionID)
+			continue
+		}
+		if !record.Ref.ExpiresAt.IsZero() && !now.Before(record.Ref.ExpiresAt) {
+			_ = s.removeSession(ctx, keys, subject, sessionID)
+			continue
+		}
+		refs = append(refs, record.Ref)
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].IssuedAt.Equal(refs[j].IssuedAt) {
+			return refs[i].SessionID < refs[j].SessionID
+		}
+		return refs[i].IssuedAt.Before(refs[j].IssuedAt)
+	})
+	return refs, nil
 }
 
-// RemoveSession 删除 subject 索引中的会话及对应 session。
+// RemoveSession 原子删除 session、索引与关联 key。
 func (s *RedisStore) RemoveSession(ctx context.Context, subject, sessionID string) error {
 	keys, err := s.extendedKeys()
 	if err != nil {
 		return err
 	}
-	refs, err := s.ListBySubject(ctx, subject)
-	if err != nil {
-		return err
-	}
-	for _, ref := range refs {
-		if ref.SessionID != sessionID {
-			continue
-		}
-		if ref.AccessTokenID != "" {
-			_, _ = s.client.Del(keys.AccessKey(ref.AccessTokenID))
-		}
-		if ref.RefreshTokenID != "" {
-			_, _ = s.client.Del(keys.RefreshKey(ref.RefreshTokenID))
-		}
-		member, marshalErr := json.Marshal(ref)
-		if marshalErr != nil {
-			return marshalErr
-		}
-		_, err = s.client.Eval(
-			`return redis.call("ZREM", KEYS[1], ARGV[1])`,
-			[]string{keys.SubjectSessionsKey(subject)},
-			string(member),
-		)
-		return err
-	}
-	return nil
+	return s.removeSession(ctx, keys, subject, sessionID)
 }
 
-// TouchSession 更新索引中的会话引用与 TTL。
+func (s *RedisStore) removeSession(ctx context.Context, keys ExtendedKeyStrategy, subject, sessionID string) error {
+	_, err := s.client.Eval(
+		`local rec = redis.call("HGET", KEYS[1], ARGV[1])
+if rec then
+  local ok, decoded = pcall(cjson.decode, rec)
+  if ok then
+    redis.call("DEL", decoded.access_key, decoded.refresh_key, decoded.session_key)
+  end
+  redis.call("HDEL", KEYS[1], ARGV[1])
+end
+redis.call("ZREM", KEYS[2], ARGV[1])
+return 1`,
+		[]string{s.refsKey(subject, keys), keys.SubjectSessionsKey(subject)},
+		sessionID,
+	)
+	return err
+}
+
+// TouchSession 单条 Lua 更新 session 记录、索引成员与 TTL。
 func (s *RedisStore) TouchSession(ctx context.Context, ref auth.SessionRef, ttl time.Duration) error {
 	keys, err := s.extendedKeys()
 	if err != nil {
@@ -140,53 +199,78 @@ func (s *RedisStore) TouchSession(ctx context.Context, ref auth.SessionRef, ttl 
 	if ref.IssuedAt.IsZero() {
 		ref.IssuedAt = time.Now().UTC()
 	}
-	indexKey := keys.SubjectSessionsKey(ref.Subject)
-	refs, err := s.ListBySubject(ctx, ref.Subject)
-	if err != nil {
-		return err
-	}
-	for _, existing := range refs {
-		if existing.SessionID != ref.SessionID {
-			continue
-		}
-		member, marshalErr := json.Marshal(existing)
-		if marshalErr != nil {
-			return marshalErr
-		}
-		if _, err := s.client.Eval(
-			`return redis.call("ZREM", KEYS[1], ARGV[1])`,
-			[]string{indexKey},
-			string(member),
-		); err != nil {
-			return err
-		}
-	}
-	member, err := json.Marshal(ref)
+	record := s.newSessionRecord(keys, ref)
+	recordJSON, err := json.Marshal(record)
 	if err != nil {
 		return err
 	}
 	_, err = s.client.Eval(
-		`redis.call("ZADD", KEYS[1], ARGV[1], ARGV[2])
-redis.call("EXPIRE", KEYS[1], ARGV[3])
+		`redis.call("SETEX", KEYS[1], ARGV[2], ARGV[1])
+redis.call("HSET", KEYS[2], ARGV[3], ARGV[1])
+redis.call("ZADD", KEYS[3], ARGV[4], ARGV[3])
+redis.call("EXPIRE", KEYS[2], ARGV[2])
+redis.call("EXPIRE", KEYS[3], ARGV[2])
 return 1`,
-		[]string{indexKey},
-		ref.IssuedAt.Unix(),
-		string(member),
+		[]string{
+			keys.SessionKey(ref.SessionID),
+			s.refsKey(ref.Subject, keys),
+			keys.SubjectSessionsKey(ref.Subject),
+		},
+		string(recordJSON),
 		seconds(ttl),
+		ref.SessionID,
+		ref.IssuedAt.UnixNano(),
 	)
 	return err
 }
 
-// RotateRefreshSessionWithIndex 轮换 refresh session 并更新索引引用。
+// RotateRefreshSessionWithIndex 单条 Lua 完成 refresh 轮换与索引更新。
 func (s *RedisStore) RotateRefreshSessionWithIndex(ctx context.Context, oldTokenID string, newSession auth.RefreshSession, newRef auth.SessionRef, ttl time.Duration) (bool, error) {
-	ok, err := s.RotateRefreshSession(ctx, oldTokenID, newSession.TokenID, newSession, ttl)
-	if err != nil || !ok {
-		return ok, err
-	}
-	if err := s.TouchSession(ctx, newRef, ttl); err != nil {
+	keys, err := s.extendedKeys()
+	if err != nil {
 		return false, err
 	}
-	return true, nil
+	if newRef.IssuedAt.IsZero() {
+		newRef.IssuedAt = time.Now().UTC()
+	}
+	record := s.newSessionRecord(keys, newRef)
+	recordJSON, err := json.Marshal(record)
+	if err != nil {
+		return false, err
+	}
+	sessionJSON, err := json.Marshal(newSession)
+	if err != nil {
+		return false, err
+	}
+	result, err := s.client.Eval(
+		`if not redis.call("GET", KEYS[1]) then
+  return 0
+end
+redis.call("DEL", KEYS[1])
+redis.call("SETEX", KEYS[2], ARGV[1], ARGV[2])
+redis.call("SETEX", KEYS[3], ARGV[1], ARGV[3])
+redis.call("HSET", KEYS[4], ARGV[4], ARGV[3])
+redis.call("ZADD", KEYS[5], ARGV[5], ARGV[4])
+redis.call("EXPIRE", KEYS[4], ARGV[1])
+redis.call("EXPIRE", KEYS[5], ARGV[1])
+return 1`,
+		[]string{
+			keys.RefreshKey(oldTokenID),
+			keys.RefreshKey(newSession.TokenID),
+			keys.SessionKey(newRef.SessionID),
+			s.refsKey(newRef.Subject, keys),
+			keys.SubjectSessionsKey(newRef.Subject),
+		},
+		seconds(ttl),
+		string(sessionJSON),
+		string(recordJSON),
+		newRef.SessionID,
+		newRef.IssuedAt.UnixNano(),
+	)
+	if err != nil {
+		return false, err
+	}
+	return toBool(result)
 }
 
 // SaveRefreshGrace 保存刷新宽限记录。
@@ -270,18 +354,18 @@ return 1`,
 	return toBool(result)
 }
 
-func parseSessionRefs(result any) ([]auth.SessionRef, error) {
+func parseEvictedRefs(result any) ([]auth.SessionRef, error) {
 	values, err := toStringSlice(result)
 	if err != nil {
 		return nil, err
 	}
 	refs := make([]auth.SessionRef, 0, len(values))
 	for _, value := range values {
-		var ref auth.SessionRef
-		if err := json.Unmarshal([]byte(value), &ref); err != nil {
+		var record redisSessionRecord
+		if err := json.Unmarshal([]byte(value), &record); err != nil {
 			continue
 		}
-		refs = append(refs, ref)
+		refs = append(refs, record.Ref)
 	}
 	return refs, nil
 }

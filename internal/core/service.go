@@ -760,7 +760,9 @@ func (s *Service) logoutAccess(ctx context.Context, claims TokenClaims, ttl time
 		}
 	}
 	if s.indexedStore != nil && claims.SessionID != "" {
-		return s.indexedStore.RemoveSession(ctx, claims.Subject, claims.SessionID)
+		if err := s.indexedStore.RemoveSession(ctx, claims.Subject, claims.SessionID); err != nil {
+			return err
+		}
 	}
 
 	session, getErr := s.store.GetAccessSession(ctx, claims.TokenID)

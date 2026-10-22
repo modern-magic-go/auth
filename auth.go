@@ -20,14 +20,18 @@ type VersionInfo = core.VersionInfo
 func GetVersionInfo() VersionInfo { return core.GetVersionInfo() }
 
 var (
-	ErrInvalidConfig        = core.ErrInvalidConfig
-	ErrInvalidBearerToken   = core.ErrInvalidBearerToken
-	ErrInvalidTokenFormat   = core.ErrInvalidTokenFormat
-	ErrTokenTypeMismatch    = core.ErrTokenTypeMismatch
-	ErrTokenExpired         = core.ErrTokenExpired
-	ErrSessionNotFound      = core.ErrSessionNotFound
-	ErrTokenRevoked         = core.ErrTokenRevoked
-	ErrRefreshTokenReplayed = core.ErrRefreshTokenReplayed
+	ErrInvalidConfig           = core.ErrInvalidConfig
+	ErrInvalidBearerToken      = core.ErrInvalidBearerToken
+	ErrInvalidTokenFormat      = core.ErrInvalidTokenFormat
+	ErrTokenTypeMismatch       = core.ErrTokenTypeMismatch
+	ErrTokenExpired            = core.ErrTokenExpired
+	ErrSessionNotFound         = core.ErrSessionNotFound
+	ErrTokenRevoked            = core.ErrTokenRevoked
+	ErrRefreshTokenReplayed    = core.ErrRefreshTokenReplayed
+	ErrReservedClaim           = core.ErrReservedClaim
+	ErrRevocationNotConfigured = core.ErrRevocationNotConfigured
+	ErrUnsupportedMode         = core.ErrUnsupportedMode
+	ErrSessionIDRequired       = core.ErrSessionIDRequired
 )
 
 type RefreshPolicy = core.RefreshPolicy
@@ -42,6 +46,13 @@ type Config = core.Config
 
 func DefaultConfig() Config { return core.DefaultConfig() }
 
+type AccessTokenMode = core.AccessTokenMode
+
+const (
+	AccessTokenStateful  = core.AccessTokenStateful
+	AccessTokenStateless = core.AccessTokenStateless
+)
+
 type TokenType = core.TokenType
 
 const (
@@ -50,23 +61,30 @@ const (
 )
 
 type (
-	TokenClaims     = core.TokenClaims
-	SessionMetadata = core.SessionMetadata
-	AccessSession   = core.AccessSession
-	RefreshSession  = core.RefreshSession
-	TokenPair       = core.TokenPair
-	IssueRequest    = core.IssueRequest
-	ValidateResult  = core.ValidateResult
-	RefreshResult   = core.RefreshResult
+	TokenClaims        = core.TokenClaims
+	SessionMetadata    = core.SessionMetadata
+	AccessSession      = core.AccessSession
+	RefreshSession     = core.RefreshSession
+	TokenPair          = core.TokenPair
+	IssueRequest       = core.IssueRequest
+	ValidateResult     = core.ValidateResult
+	RefreshResult      = core.RefreshResult
+	SessionRef         = core.SessionRef
+	RefreshGraceRecord = core.RefreshGraceRecord
 )
 
 type (
-	TokenFormatAdapter = core.TokenFormatAdapter
-	RefreshTokenFormat = core.RefreshTokenFormat
-	SessionStore       = core.SessionStore
-	Clock              = core.Clock
-	RandomSource       = core.RandomSource
-	Serializer         = core.Serializer
+	TokenFormatAdapter  = core.TokenFormatAdapter
+	RefreshTokenFormat  = core.RefreshTokenFormat
+	SessionStore        = core.SessionStore
+	SigningFormat       = core.SigningFormat
+	IndexedSessionStore = core.IndexedSessionStore
+	RevocationStore     = core.RevocationStore
+	RefreshGraceStore   = core.RefreshGraceStore
+	GraceRotationStore  = core.GraceRotationStore
+	Clock               = core.Clock
+	RandomSource        = core.RandomSource
+	Serializer          = core.Serializer
 )
 
 type Service = core.Service
@@ -100,6 +118,18 @@ func WithRandomSource(random RandomSource) Option {
 
 func WithSerializer(serializer Serializer) Option {
 	return core.WithSerializer(serializer)
+}
+
+func WithRevocationStore(store RevocationStore) Option {
+	return core.WithRevocationStore(store)
+}
+
+func WithSessionEvictionHandler(handler func(ctx context.Context, evicted []SessionRef)) Option {
+	return core.WithSessionEvictionHandler(handler)
+}
+
+func WithGraceEncryptionKey(key []byte) Option {
+	return core.WithGraceEncryptionKey(key)
 }
 
 func WithRollbackFailureHandler(handler func(ctx context.Context, op string, tokenID string, err error)) Option {

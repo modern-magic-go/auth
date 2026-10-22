@@ -33,14 +33,18 @@ func GetVersionInfo() VersionInfo {
 // ─── Errors ────────────────────────────────────────────────────────────────
 
 var (
-	ErrInvalidConfig        = errors.New("auth: invalid config")
-	ErrInvalidBearerToken   = errors.New("auth: invalid bearer token")
-	ErrInvalidTokenFormat   = errors.New("auth: invalid token format")
-	ErrTokenTypeMismatch    = errors.New("auth: token type mismatch")
-	ErrTokenExpired         = errors.New("auth: token expired")
-	ErrSessionNotFound      = errors.New("auth: session not found")
-	ErrTokenRevoked         = errors.New("auth: token revoked")
-	ErrRefreshTokenReplayed = errors.New("auth: refresh token replay detected")
+	ErrInvalidConfig           = errors.New("auth: invalid config")
+	ErrInvalidBearerToken      = errors.New("auth: invalid bearer token")
+	ErrInvalidTokenFormat      = errors.New("auth: invalid token format")
+	ErrTokenTypeMismatch       = errors.New("auth: token type mismatch")
+	ErrTokenExpired            = errors.New("auth: token expired")
+	ErrSessionNotFound         = errors.New("auth: session not found")
+	ErrTokenRevoked            = errors.New("auth: token revoked")
+	ErrRefreshTokenReplayed    = errors.New("auth: refresh token replay detected")
+	ErrReservedClaim           = errors.New("auth: reserved claim")
+	ErrRevocationNotConfigured = errors.New("auth: revocation store not configured")
+	ErrUnsupportedMode         = errors.New("auth: unsupported access token mode")
+	ErrSessionIDRequired       = errors.New("auth: session id required")
 )
 
 // ─── Config ────────────────────────────────────────────────────────────────
@@ -54,16 +58,29 @@ const (
 	RefreshPolicyOneTimeRotation  RefreshPolicy = "one_time_rotation"
 )
 
+// AccessTokenMode 定义 access token 的校验模式。
+type AccessTokenMode string
+
+const (
+	AccessTokenStateful  AccessTokenMode = "stateful"
+	AccessTokenStateless AccessTokenMode = "stateless"
+)
+
 // Config 是认证模块的显式配置契约。
 type Config struct {
-	AccessTokenTTL      time.Duration
-	RefreshTokenTTL     time.Duration
-	RefreshPolicy       RefreshPolicy
-	RotateNearExpiry    time.Duration
-	ClockSkew           time.Duration
-	SlidingExpiration   bool
-	SlidingExtensionTTL time.Duration
-	TokenIDLength       int
+	AccessTokenTTL        time.Duration
+	RefreshTokenTTL       time.Duration
+	RefreshPolicy         RefreshPolicy
+	RotateNearExpiry      time.Duration
+	RotateNearExpiryRatio float64
+	ClockSkew             time.Duration
+	SlidingExpiration     bool
+	SlidingExtensionTTL   time.Duration
+	TokenIDLength         int
+	TokenVersion          string
+	AccessTokenMode       AccessTokenMode
+	MaxSessionsPerSubject int
+	RefreshGracePeriod    time.Duration
 }
 
 // DefaultConfig 返回推荐默认配置。
@@ -77,6 +94,7 @@ func DefaultConfig() Config {
 		SlidingExpiration:   false,
 		SlidingExtensionTTL: 15 * time.Minute,
 		TokenIDLength:       24,
+		AccessTokenMode:     AccessTokenStateful,
 	}
 }
 
@@ -104,6 +122,18 @@ func (c Config) Normalize() Config {
 	if c.TokenIDLength <= 0 {
 		c.TokenIDLength = d.TokenIDLength
 	}
+	if c.AccessTokenMode == "" {
+		c.AccessTokenMode = AccessTokenStateful
+	}
+	if c.MaxSessionsPerSubject < 0 {
+		c.MaxSessionsPerSubject = 0
+	}
+	if c.RotateNearExpiryRatio < 0 {
+		c.RotateNearExpiryRatio = 0
+	}
+	if c.RefreshGracePeriod < 0 {
+		c.RefreshGracePeriod = 0
+	}
 	return c
 }
 
@@ -119,12 +149,14 @@ const (
 
 // TokenClaims 是认证核心与 token 格式适配器之间的最小字段契约。
 type TokenClaims struct {
-	TokenID   string    `json:"jti"`
-	TokenType TokenType `json:"typ"`
-	Subject   string    `json:"sub"`
-	IssuedAt  time.Time `json:"iat"`
-	ExpiresAt time.Time `json:"exp"`
-	Version   string    `json:"ver"`
+	TokenID     string         `json:"jti"`
+	TokenType   TokenType      `json:"typ"`
+	Subject     string         `json:"sub"`
+	IssuedAt    time.Time      `json:"iat"`
+	ExpiresAt   time.Time      `json:"exp"`
+	Version     string         `json:"ver"`
+	SessionID   string         `json:"sid,omitempty"`
+	ExtraClaims map[string]any `json:"-"`
 }
 
 // SessionMetadata 统一承载业务扩展信息。
@@ -137,16 +169,22 @@ type AccessSession struct {
 	IssuedAt       time.Time       `json:"issued_at"`
 	ExpiresAt      time.Time       `json:"expires_at"`
 	RefreshTokenID string          `json:"refresh_token_id"`
+	SessionID      string          `json:"session_id,omitempty"`
+	TokenVersion   string          `json:"token_version,omitempty"`
+	ExtraClaims    SessionMetadata `json:"extra_claims,omitempty"`
 	Metadata       SessionMetadata `json:"metadata,omitempty"`
 }
 
 // RefreshSession 为服务端存储的 Refresh Token 会话记录。
 type RefreshSession struct {
-	TokenID   string          `json:"token_id"`
-	Subject   string          `json:"subject"`
-	IssuedAt  time.Time       `json:"issued_at"`
-	ExpiresAt time.Time       `json:"expires_at"`
-	Metadata  SessionMetadata `json:"metadata,omitempty"`
+	TokenID      string          `json:"token_id"`
+	Subject      string          `json:"subject"`
+	IssuedAt     time.Time       `json:"issued_at"`
+	ExpiresAt    time.Time       `json:"expires_at"`
+	SessionID    string          `json:"session_id,omitempty"`
+	TokenVersion string          `json:"token_version,omitempty"`
+	ExtraClaims  SessionMetadata `json:"extra_claims,omitempty"`
+	Metadata     SessionMetadata `json:"metadata,omitempty"`
 }
 
 // TokenPair 表示登录后签发的一对令牌。
@@ -155,12 +193,16 @@ type TokenPair struct {
 	RefreshToken  string
 	AccessExpiry  time.Time
 	RefreshExpiry time.Time
+	SessionID     string
 }
 
 // IssueRequest 是签发 token 对的输入。
 type IssueRequest struct {
-	Subject  string
-	Metadata SessionMetadata
+	Subject     string
+	Metadata    SessionMetadata
+	SessionID   string
+	ExtraClaims map[string]any
+	Version     string
 }
 
 // ValidateResult 是 Access Token 校验成功后的结果。
@@ -168,7 +210,10 @@ type ValidateResult struct {
 	Subject        string
 	AccessTokenID  string
 	RefreshTokenID string
+	SessionID      string
+	Version        string
 	Metadata       SessionMetadata
+	ExtraClaims    map[string]any
 	IssuedAt       time.Time
 	ExpiresAt      time.Time
 }
@@ -180,6 +225,7 @@ type RefreshResult struct {
 	AccessExpiry  time.Time
 	RefreshExpiry time.Time
 	Rotated       bool
+	SessionID     string
 }
 
 // ─── Interfaces ────────────────────────────────────────────────────────────
@@ -200,6 +246,68 @@ type SessionStore interface {
 	DeleteRefreshSession(ctx context.Context, tokenID string) error
 	RotateRefreshSession(ctx context.Context, oldTokenID, newTokenID string, newSession RefreshSession, ttl time.Duration) (bool, error)
 	TouchAccessSession(ctx context.Context, tokenID string, ttl time.Duration) error
+}
+
+// SigningFormat 标记 token 格式是否提供签名完整性保护。
+type SigningFormat interface {
+	IsSigned() bool
+}
+
+// SessionRef 是会话索引中的一条记录。
+type SessionRef struct {
+	SessionID      string    `json:"session_id"`
+	Subject        string    `json:"subject"`
+	AccessTokenID  string    `json:"access_token_id"`
+	RefreshTokenID string    `json:"refresh_token_id"`
+	IssuedAt       time.Time `json:"issued_at"`
+	ExpiresAt      time.Time `json:"expires_at"`
+}
+
+// IndexedSessionStore 是带 subject 会话索引的扩展存储契约。
+//
+// CreateSession 必须原子完成「保存 access/refresh session + 写索引 + 裁剪」，
+// 并返回被裁剪掉的会话记录。索引能力是可选的，由 Config.MaxSessionsPerSubject 开启。
+type IndexedSessionStore interface {
+	SessionStore
+
+	CreateSession(ctx context.Context, access AccessSession, refresh RefreshSession, accessTTL, refreshTTL time.Duration, maxPerSubject int) ([]SessionRef, error)
+	ListBySubject(ctx context.Context, subject string) ([]SessionRef, error)
+	RemoveSession(ctx context.Context, subject, sessionID string) error
+	TouchSession(ctx context.Context, ref SessionRef, ttl time.Duration) error
+	RotateRefreshSessionWithIndex(ctx context.Context, oldTokenID string, newSession RefreshSession, newRef SessionRef, ttl time.Duration) (bool, error)
+}
+
+// RevocationStore 定义 SID / subject 级吊销存储契约。
+type RevocationStore interface {
+	RevokeSession(ctx context.Context, sessionID string, ttl time.Duration) error
+	RevokeSubject(ctx context.Context, subject string, ttl time.Duration) error
+	IsRevoked(ctx context.Context, sessionID, subject string) (bool, error)
+}
+
+// RefreshGraceRecord 是轮换后宽限期内用于幂等重放的记录。
+//
+// RefreshTokenCiphertext 是加密后的 refresh token，存储层不会接触明文。
+type RefreshGraceRecord struct {
+	OldTokenID             string    `json:"old_token_id"`
+	NewTokenID             string    `json:"new_token_id"`
+	SessionID              string    `json:"session_id"`
+	Subject                string    `json:"subject"`
+	AccessToken            string    `json:"access_token"`
+	RefreshTokenCiphertext string    `json:"refresh_token_ciphertext"`
+	AccessExpiresAt        time.Time `json:"access_expires_at"`
+	RefreshExpiresAt       time.Time `json:"refresh_expires_at"`
+}
+
+// RefreshGraceStore 定义刷新宽限记录的共享存储契约。
+type RefreshGraceStore interface {
+	SaveRefreshGrace(ctx context.Context, record RefreshGraceRecord, ttl time.Duration) error
+	GetRefreshGrace(ctx context.Context, oldTokenID string) (RefreshGraceRecord, error)
+	DeleteRefreshGrace(ctx context.Context, oldTokenID string) error
+}
+
+// GraceRotationStore 将 refresh 轮换与 grace 记录写入合并为一个原子操作。
+type GraceRotationStore interface {
+	RotateRefreshSessionWithGrace(ctx context.Context, oldTokenID string, newSession RefreshSession, record RefreshGraceRecord, sessionTTL, graceTTL time.Duration) (bool, error)
 }
 
 // Clock 抽象时间源，便于测试。

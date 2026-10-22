@@ -17,6 +17,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   token，持久化 ID 为 `Base64URL(SHA-256(token))`，存储层不接触 token 明文。
 - 新增 `example/jwt_opaque` 示例与 `testdata/interop` 跨语言互验模块（golang-jwt /
   PHP lcobucci/jwt）。
+- 新增自定义 claims 与稳定 `SessionID`：`IssueRequest.ExtraClaims` /
+  `IssueRequest.SessionID`，`TokenPair` / `ValidateResult` 返回 `SessionID` 与
+  `ExtraClaims`。
+- 新增 `Config.TokenVersion` 与 `IssueRequest.Version`，refresh 后保持版本不变。
+- 新增无状态 Access Token 模式 `AccessTokenStateless`；要求签名格式，并支持
+  `SigningFormat` 标记接口。
+- 新增 `RevocationStore`、`RevokeSession`、`RevokeSubject` 与
+  `adapters.RedisRevocationStore` / `adapters.MemoryRevocationStore`。
+- 新增 `MaxSessionsPerSubject`、`IndexedSessionStore`、`WithSessionEvictionHandler`；
+  `MemoryStore` / `RedisStore` 支持 subject 会话索引与最旧会话裁剪。
+- 新增 `RotateNearExpiryRatio`、`RefreshGracePeriod`、`RefreshGraceStore`、
+  `GraceRotationStore` 与 `WithGraceEncryptionKey`；grace 记录中的 refresh token
+  使用 AES-GCM 加密。
+- 新增 `ExtendedKeyStrategy`，覆盖 session 索引、grace 与吊销 key；默认
+  `NewPrefixedKeyStrategy` 已实现。
 
 ## [v1.0.0] - 2026-04-07
 

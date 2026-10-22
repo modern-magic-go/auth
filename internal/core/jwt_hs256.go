@@ -19,18 +19,6 @@ type jwtHeader struct {
 	Type      string `json:"typ"`
 }
 
-type jwtPayload struct {
-	TokenID   string `json:"jti"`
-	TokenType string `json:"typ"`
-	Subject   string `json:"sub"`
-	IssuedAt  *int64 `json:"iat"`
-	ExpiresAt *int64 `json:"exp"`
-	NotBefore *int64 `json:"nbf,omitempty"`
-	Version   string `json:"ver"`
-	Issuer    string `json:"iss,omitempty"`
-	Audience  any    `json:"aud,omitempty"`
-}
-
 type jwtConfig struct {
 	issuer   string
 	audience []string
@@ -112,6 +100,11 @@ func NewJWTHS256FormatAdapter(secret []byte, opts ...JWTOption) TokenFormatAdapt
 	}
 }
 
+// IsSigned 报告该格式提供签名完整性保护。
+func (a *jwtHS256FormatAdapter) IsSigned() bool {
+	return true
+}
+
 // Encode 编码并签名 token claims。
 func (a *jwtHS256FormatAdapter) Encode(claims TokenClaims) (string, error) {
 	headerBytes, err := json.Marshal(jwtHeader{
@@ -122,23 +115,19 @@ func (a *jwtHS256FormatAdapter) Encode(claims TokenClaims) (string, error) {
 		return "", err
 	}
 
-	issuedAt := claims.IssuedAt.Unix()
-	expiresAt := claims.ExpiresAt.Unix()
-	payload := jwtPayload{
-		TokenID:   claims.TokenID,
-		TokenType: string(claims.TokenType),
-		Subject:   claims.Subject,
-		IssuedAt:  &issuedAt,
-		ExpiresAt: &expiresAt,
-		Version:   claims.Version,
-		Issuer:    a.issuer,
+	payload, err := claimsToMap(claims)
+	if err != nil {
+		return "", err
+	}
+	if a.issuer != "" {
+		payload["iss"] = a.issuer
 	}
 	switch len(a.audience) {
 	case 0:
 	case 1:
-		payload.Audience = a.audience[0]
+		payload["aud"] = a.audience[0]
 	default:
-		payload.Audience = append([]string(nil), a.audience...)
+		payload["aud"] = append([]string(nil), a.audience...)
 	}
 
 	payloadBytes, err := json.Marshal(payload)
@@ -190,31 +179,14 @@ func (a *jwtHS256FormatAdapter) Decode(token string) (TokenClaims, error) {
 	if err != nil {
 		return TokenClaims{}, ErrInvalidTokenFormat
 	}
-	var payload jwtPayload
+	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
 		return TokenClaims{}, ErrInvalidTokenFormat
 	}
 
-	if payload.TokenID == "" || payload.Subject == "" || payload.Version == "" {
-		return TokenClaims{}, ErrInvalidTokenFormat
-	}
-	if payload.TokenType != string(TokenTypeAccess) && payload.TokenType != string(TokenTypeRefresh) {
-		return TokenClaims{}, ErrInvalidTokenFormat
-	}
-	if payload.IssuedAt == nil || payload.ExpiresAt == nil {
-		return TokenClaims{}, ErrInvalidTokenFormat
-	}
-
-	claims := TokenClaims{
-		TokenID:   payload.TokenID,
-		TokenType: TokenType(payload.TokenType),
-		Subject:   payload.Subject,
-		IssuedAt:  time.Unix(*payload.IssuedAt, 0).UTC(),
-		ExpiresAt: time.Unix(*payload.ExpiresAt, 0).UTC(),
-		Version:   payload.Version,
-	}
-	if !claims.ExpiresAt.After(claims.IssuedAt) {
-		return TokenClaims{}, ErrInvalidTokenFormat
+	claims, err := claimsFromMap(payload)
+	if err != nil {
+		return TokenClaims{}, err
 	}
 
 	now := a.clock.Now().UTC()
@@ -224,18 +196,31 @@ func (a *jwtHS256FormatAdapter) Decode(token string) (TokenClaims, error) {
 	if claims.IssuedAt.After(now.Add(a.leeway)) {
 		return TokenClaims{}, ErrInvalidTokenFormat
 	}
-	if payload.NotBefore != nil {
-		notBefore := time.Unix(*payload.NotBefore, 0).UTC()
-		if now.Add(a.leeway).Before(notBefore) {
+
+	if raw, ok := payload["nbf"]; ok {
+		var notBefore int64
+		if err := json.Unmarshal(raw, &notBefore); err != nil {
+			return TokenClaims{}, ErrInvalidTokenFormat
+		}
+		if now.Add(a.leeway).Before(time.Unix(notBefore, 0).UTC()) {
 			return TokenClaims{}, ErrInvalidTokenFormat
 		}
 	}
 
-	if a.issuer != "" && payload.Issuer != a.issuer {
-		return TokenClaims{}, ErrInvalidTokenFormat
+	if a.issuer != "" {
+		var issuer string
+		if raw, ok := payload["iss"]; !ok || json.Unmarshal(raw, &issuer) != nil || issuer != a.issuer {
+			return TokenClaims{}, ErrInvalidTokenFormat
+		}
 	}
 	if len(a.audience) > 0 {
-		ok, err := jwtAudienceMatches(payload.Audience, a.audience)
+		var audience any
+		if raw, ok := payload["aud"]; ok {
+			if err := json.Unmarshal(raw, &audience); err != nil {
+				return TokenClaims{}, ErrInvalidTokenFormat
+			}
+		}
+		ok, err := jwtAudienceMatches(audience, a.audience)
 		if err != nil || !ok {
 			return TokenClaims{}, ErrInvalidTokenFormat
 		}

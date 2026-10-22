@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
-	"time"
 )
 
 // SignedTokenFormatAdapter 提供 HMAC-SHA256 签名的 token 格式。
@@ -21,82 +20,59 @@ func NewSignedTokenFormatAdapter(secret []byte) TokenFormatAdapter {
 	if len(secret) == 0 {
 		panic("go-auth: secret cannot be empty")
 	}
-	return &SignedTokenFormatAdapter{secret: secret}
+	return &SignedTokenFormatAdapter{secret: append([]byte(nil), secret...)}
+}
+
+// IsSigned 报告该格式提供签名完整性保护。
+func (a *SignedTokenFormatAdapter) IsSigned() bool {
+	return true
 }
 
 // Encode 编码并签名 token claims。
 func (a *SignedTokenFormatAdapter) Encode(claims TokenClaims) (string, error) {
-	payload := defaultTokenPayload{
-		TokenID:   claims.TokenID,
-		TokenType: string(claims.TokenType),
-		Subject:   claims.Subject,
-		IssuedAt:  claims.IssuedAt.Unix(),
-		ExpiresAt: claims.ExpiresAt.Unix(),
-		Version:   claims.Version,
-	}
-	b, err := json.Marshal(payload)
+	payload, err := claimsToMap(claims)
 	if err != nil {
 		return "", err
 	}
-	payloadB64 := base64.RawURLEncoding.EncodeToString(b)
+	bytes, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	payloadB64 := base64.RawURLEncoding.EncodeToString(bytes)
 
-	// 计算 HMAC-SHA256 签名
 	mac := hmac.New(sha256.New, a.secret)
-	mac.Write([]byte(payloadB64))
-	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	_, _ = mac.Write([]byte(payloadB64))
+	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 
-	return payloadB64 + "." + sig, nil
+	return payloadB64 + "." + signature, nil
 }
 
 // Decode 解码并验证 token 签名。
 func (a *SignedTokenFormatAdapter) Decode(token string) (TokenClaims, error) {
 	parts := strings.Split(token, ".")
-	if len(parts) != 2 {
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return TokenClaims{}, ErrInvalidTokenFormat
 	}
 
-	payloadB64, sigB64 := parts[0], parts[1]
+	payloadB64, signatureB64 := parts[0], parts[1]
 
-	// 验证签名
+	signature, err := decodeJWTSegment(signatureB64)
+	if err != nil {
+		return TokenClaims{}, ErrInvalidTokenFormat
+	}
 	mac := hmac.New(sha256.New, a.secret)
-	mac.Write([]byte(payloadB64))
-	expectedSig, err := base64.RawURLEncoding.DecodeString(sigB64)
+	_, _ = mac.Write([]byte(payloadB64))
+	if !hmac.Equal(mac.Sum(nil), signature) {
+		return TokenClaims{}, ErrInvalidTokenFormat
+	}
+
+	payloadBytes, err := decodeJWTSegment(payloadB64)
 	if err != nil {
 		return TokenClaims{}, ErrInvalidTokenFormat
 	}
-	if !hmac.Equal(mac.Sum(nil), expectedSig) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
 		return TokenClaims{}, ErrInvalidTokenFormat
 	}
-
-	// 解码 payload
-	b, err := base64.RawURLEncoding.DecodeString(payloadB64)
-	if err != nil {
-		return TokenClaims{}, ErrInvalidTokenFormat
-	}
-
-	var payload defaultTokenPayload
-	if err := json.Unmarshal(b, &payload); err != nil {
-		return TokenClaims{}, ErrInvalidTokenFormat
-	}
-
-	claims := TokenClaims{
-		TokenID:   payload.TokenID,
-		TokenType: TokenType(payload.TokenType),
-		Subject:   payload.Subject,
-		IssuedAt:  time.Unix(payload.IssuedAt, 0).UTC(),
-		ExpiresAt: time.Unix(payload.ExpiresAt, 0).UTC(),
-		Version:   payload.Version,
-	}
-
-	if claims.TokenID == "" || claims.Subject == "" || claims.Version == "" {
-		return TokenClaims{}, ErrInvalidTokenFormat
-	}
-	if claims.TokenType != TokenTypeAccess && claims.TokenType != TokenTypeRefresh {
-		return TokenClaims{}, ErrInvalidTokenFormat
-	}
-	if !claims.ExpiresAt.After(claims.IssuedAt) {
-		return TokenClaims{}, ErrInvalidTokenFormat
-	}
-
-	return claims, nil
+	return claimsFromMap(payload)
 }

@@ -928,7 +928,7 @@ func (s *Service) tokenVersion(override string) string {
 	if s.config.TokenVersion != "" {
 		return s.config.TokenVersion
 	}
-	return ModuleVersion
+	return DefaultTokenVersion
 }
 
 func (s *Service) checkRevoked(ctx context.Context, sessionID, subject string) error {

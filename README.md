@@ -95,7 +95,8 @@ svc, err := auth.NewService(cfg, store,
 - 外部系统签发 token 时必须包含 `jti/typ/sub/iat/exp/ver`，缺失或为空的 `ver`
   会被拒绝。
 - `Decode` 拒绝 `alg=none`、非 HS256、错误签名、过期/未生效、错误 `iss/aud`。
-- `ver` 默认是 `ModuleVersion`，可用 `Config.TokenVersion` 或 `IssueRequest.Version` 覆盖；`typ` 只能是 `access` / `refresh`。
+- `ver` 是**登录态凭据版本**，与模块发布版本、依赖版本无关；默认 `DefaultTokenVersion`（`v1`），
+  由接入方用 `Config.TokenVersion` 或 `IssueRequest.Version` 自行控制；`typ` 只能是 `access` / `refresh`。
 - JWT 时间校验使用 `WithJWTClock`（默认真实时钟）；如果自定义了 `Config.ClockSkew`，请用
   `WithJWTLeeway` 设置相同容差。
 
@@ -220,12 +221,13 @@ svc, _ := auth.NewService(cfg, store,
 ### token version
 
 ```go
-cfg.TokenVersion = "1" // 为空时使用 ModuleVersion
+cfg.TokenVersion = "v1" // 为空时使用 DefaultTokenVersion
 // 或在单次签发时覆盖：
-pair, _ := svc.IssueTokenPair(ctx, auth.IssueRequest{Subject: "u", Version: "2"})
+pair, _ := svc.IssueTokenPair(ctx, auth.IssueRequest{Subject: "u", Version: "v2"})
 ```
 
 - refresh 后版本保持不变；不透明 refresh 模式会把版本存在 session 中。
+- 该版本只描述登录态凭据契约：提升它可让旧 token 整体失效，**不要**把它当作本库的发布版本。
 
 ## KeyStrategy
 

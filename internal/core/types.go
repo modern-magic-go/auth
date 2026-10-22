@@ -10,23 +10,27 @@ import (
 
 // ─── Version ───────────────────────────────────────────────────────────────
 
-// ModuleVersion 标识当前认证模块能力契约版本。
-const ModuleVersion = "v1.0.0"
+// DefaultTokenVersion 是签发 token 时写入 `ver` 的默认登录态凭据版本。
+//
+// `ver` 描述的是凭据自身的契约版本（用于整体失效一批登录态），
+// 与模块发布版本（git tag）、依赖版本无关，应由接入方按自己的登录态策略管理：
+// 通过 Config.TokenVersion 设置默认值，或用 IssueRequest.Version 按次覆盖。
+const DefaultTokenVersion = "v1"
 
 // CompatibilityNotes 描述升级时需要关注的兼容约束。
 const CompatibilityNotes = "升级模块版本时需检查配置结构、token格式、refresh策略与适配器接口兼容性"
 
-// VersionInfo 提供稳定的版本信息结构。
+// VersionInfo 提供凭据版本与升级兼容约束信息。
 type VersionInfo struct {
-	ModuleVersion      string
-	CompatibilityNotes string
+	DefaultTokenVersion string
+	CompatibilityNotes  string
 }
 
-// GetVersionInfo 返回当前模块版本信息。
+// GetVersionInfo 返回默认凭据版本与升级兼容约束信息。
 func GetVersionInfo() VersionInfo {
 	return VersionInfo{
-		ModuleVersion:      ModuleVersion,
-		CompatibilityNotes: CompatibilityNotes,
+		DefaultTokenVersion: DefaultTokenVersion,
+		CompatibilityNotes:  CompatibilityNotes,
 	}
 }
 

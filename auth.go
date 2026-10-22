@@ -12,7 +12,11 @@ import (
 	"github.com/modern-magic-go/auth/internal/core"
 )
 
-const ModuleVersion = core.ModuleVersion
+// DefaultTokenVersion 是 token 中 `ver` 的默认登录态凭据版本。
+// 它由接入方通过 Config.TokenVersion 或 IssueRequest.Version 自行控制，
+// 与模块发布版本无关。
+const DefaultTokenVersion = core.DefaultTokenVersion
+
 const CompatibilityNotes = core.CompatibilityNotes
 
 type VersionInfo = core.VersionInfo

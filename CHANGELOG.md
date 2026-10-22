@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v0.2.0] - 2026-10-22
 
 ### Added
 
@@ -58,6 +58,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RefreshGraceRecord.AccessToken` 重命名为 `AccessTokenCiphertext`。滚动升级时旧
   版本写入的 grace 记录无法解密重放；grace TTL 通常很短，升级后可让客户端重新
   refresh 或重新登录。
+- `ModuleVersion`（`v1.0.0`）更名为 `DefaultTokenVersion`（`v1`），
+  `VersionInfo.ModuleVersion` 字段同步更名为 `VersionInfo.DefaultTokenVersion`。
+  `ver` 是**登录态凭据版本**，由接入方通过 `Config.TokenVersion` 或
+  `IssueRequest.Version` 独立控制，与模块发布版本（git tag）和依赖版本无关；
+  若之前依赖默认值，请显式配置 `TokenVersion` 以免升级后 `ver` 变化。
 
 ## [v1.0.0] - 2026-04-07
 

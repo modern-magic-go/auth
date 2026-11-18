@@ -27,13 +27,24 @@ type KeyStrategy interface {
 	RefreshKey(tokenID string) string
 }
 
+// ExtendedKeyStrategy 为会话索引、grace 与吊销存储提供额外 key 命名。
+type ExtendedKeyStrategy interface {
+	KeyStrategy
+
+	SessionKey(sessionID string) string
+	SubjectSessionsKey(subject string) string
+	RefreshGraceKey(tokenID string) string
+	RevokedSessionKey(sessionID string) string
+	RevokedSubjectKey(subject string) string
+}
+
 // PrefixedKeyStrategy 是默认前缀 key 策略。
 type PrefixedKeyStrategy struct {
 	Prefix string
 }
 
 // NewPrefixedKeyStrategy 创建默认前缀 key 策略。
-func NewPrefixedKeyStrategy(prefix string) KeyStrategy {
+func NewPrefixedKeyStrategy(prefix string) ExtendedKeyStrategy {
 	return PrefixedKeyStrategy{Prefix: prefix}
 }
 
@@ -43,6 +54,26 @@ func (s PrefixedKeyStrategy) AccessKey(tokenID string) string {
 
 func (s PrefixedKeyStrategy) RefreshKey(tokenID string) string {
 	return s.Prefix + "refresh:" + tokenID
+}
+
+func (s PrefixedKeyStrategy) SessionKey(sessionID string) string {
+	return s.Prefix + "session:" + sessionID
+}
+
+func (s PrefixedKeyStrategy) SubjectSessionsKey(subject string) string {
+	return s.Prefix + "subject:" + subject + ":sessions"
+}
+
+func (s PrefixedKeyStrategy) RefreshGraceKey(tokenID string) string {
+	return s.Prefix + "grace:" + tokenID
+}
+
+func (s PrefixedKeyStrategy) RevokedSessionKey(sessionID string) string {
+	return s.Prefix + "revoked:session:" + sessionID
+}
+
+func (s PrefixedKeyStrategy) RevokedSubjectKey(subject string) string {
+	return s.Prefix + "revoked:subject:" + subject
 }
 
 // RedisStoreConfig 是 Redis 适配器配置。

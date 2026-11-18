@@ -36,10 +36,14 @@ func main() {
 
 	// 4. Issue token pair on login.
 	pair, err := svc.IssueTokenPair(ctx, auth.IssueRequest{
-		Subject: "user-123",
+		Subject:   "user-123",
+		SessionID: "demo-session",
 		Metadata: auth.SessionMetadata{
 			"platform": "web",
 			"role":     "admin",
+		},
+		ExtraClaims: map[string]any{
+			"role": "admin",
 		},
 	})
 	if err != nil {
@@ -56,7 +60,9 @@ func main() {
 		log.Fatalf("token validation failed: %v", err)
 	}
 	fmt.Printf("\nValidated Subject: %s\n", result.Subject)
+	fmt.Printf("Session ID: %s\n", result.SessionID)
 	fmt.Printf("Metadata: %v\n", result.Metadata)
+	fmt.Printf("Extra Claims: %v\n", result.ExtraClaims)
 
 	// 6. Validate via Bearer header (typical middleware usage).
 	authHeader := "Bearer " + pair.AccessToken

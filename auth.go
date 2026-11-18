@@ -5,31 +5,38 @@
 // all dependencies must be explicitly injected at initialization.
 package auth
 
-import "github.com/modern-magic-go/auth/internal/core"
+import (
+	"context"
+	"time"
 
-// ─── Version ───────────────────────────────────────────────────────────────
+	"github.com/modern-magic-go/auth/internal/core"
+)
 
-const ModuleVersion = core.ModuleVersion
+// DefaultTokenVersion 是 token 中 `ver` 的默认登录态凭据版本。
+// 它由接入方通过 Config.TokenVersion 或 IssueRequest.Version 自行控制，
+// 与模块发布版本无关。
+const DefaultTokenVersion = core.DefaultTokenVersion
+
 const CompatibilityNotes = core.CompatibilityNotes
 
 type VersionInfo = core.VersionInfo
 
 func GetVersionInfo() VersionInfo { return core.GetVersionInfo() }
 
-// ─── Errors ────────────────────────────────────────────────────────────────
-
 var (
-	ErrInvalidConfig        = core.ErrInvalidConfig
-	ErrInvalidBearerToken   = core.ErrInvalidBearerToken
-	ErrInvalidTokenFormat   = core.ErrInvalidTokenFormat
-	ErrTokenTypeMismatch    = core.ErrTokenTypeMismatch
-	ErrTokenExpired         = core.ErrTokenExpired
-	ErrSessionNotFound      = core.ErrSessionNotFound
-	ErrTokenRevoked         = core.ErrTokenRevoked
-	ErrRefreshTokenReplayed = core.ErrRefreshTokenReplayed
+	ErrInvalidConfig           = core.ErrInvalidConfig
+	ErrInvalidBearerToken      = core.ErrInvalidBearerToken
+	ErrInvalidTokenFormat      = core.ErrInvalidTokenFormat
+	ErrTokenTypeMismatch       = core.ErrTokenTypeMismatch
+	ErrTokenExpired            = core.ErrTokenExpired
+	ErrSessionNotFound         = core.ErrSessionNotFound
+	ErrTokenRevoked            = core.ErrTokenRevoked
+	ErrRefreshTokenReplayed    = core.ErrRefreshTokenReplayed
+	ErrReservedClaim           = core.ErrReservedClaim
+	ErrRevocationNotConfigured = core.ErrRevocationNotConfigured
+	ErrUnsupportedMode         = core.ErrUnsupportedMode
+	ErrSessionIDRequired       = core.ErrSessionIDRequired
 )
-
-// ─── Config ────────────────────────────────────────────────────────────────
 
 type RefreshPolicy = core.RefreshPolicy
 
@@ -43,7 +50,12 @@ type Config = core.Config
 
 func DefaultConfig() Config { return core.DefaultConfig() }
 
-// ─── Models ────────────────────────────────────────────────────────────────
+type AccessTokenMode = core.AccessTokenMode
+
+const (
+	AccessTokenStateful  = core.AccessTokenStateful
+	AccessTokenStateless = core.AccessTokenStateless
+)
 
 type TokenType = core.TokenType
 
@@ -53,33 +65,52 @@ const (
 )
 
 type (
-	TokenClaims     = core.TokenClaims
-	SessionMetadata = core.SessionMetadata
-	AccessSession   = core.AccessSession
-	RefreshSession  = core.RefreshSession
-	TokenPair       = core.TokenPair
-	IssueRequest    = core.IssueRequest
-	ValidateResult  = core.ValidateResult
-	RefreshResult   = core.RefreshResult
+	TokenClaims        = core.TokenClaims
+	SessionMetadata    = core.SessionMetadata
+	AccessSession      = core.AccessSession
+	RefreshSession     = core.RefreshSession
+	TokenPair          = core.TokenPair
+	IssueRequest       = core.IssueRequest
+	ValidateResult     = core.ValidateResult
+	RefreshResult      = core.RefreshResult
+	SessionRef         = core.SessionRef
+	RefreshGraceRecord = core.RefreshGraceRecord
 )
-
-// ─── Interfaces ────────────────────────────────────────────────────────────
 
 type (
-	TokenFormatAdapter = core.TokenFormatAdapter
-	SessionStore       = core.SessionStore
-	Clock              = core.Clock
-	RandomSource       = core.RandomSource
-	Serializer         = core.Serializer
+	TokenFormatAdapter        = core.TokenFormatAdapter
+	RefreshTokenFormat        = core.RefreshTokenFormat
+	SessionStore              = core.SessionStore
+	SigningFormat             = core.SigningFormat
+	IndexedSessionStore       = core.IndexedSessionStore
+	RevocationStore           = core.RevocationStore
+	RefreshGraceStore         = core.RefreshGraceStore
+	GraceRotationStore        = core.GraceRotationStore
+	IndexedGraceRotationStore = core.IndexedGraceRotationStore
+	Clock                     = core.Clock
+	RandomSource              = core.RandomSource
+	Serializer                = core.Serializer
 )
-
-// ─── Service Facade ────────────────────────────────────────────────────────
 
 type Service = core.Service
 type Option = core.Option
+type JWTOption = core.JWTOption
+type OpaqueRefreshOption = core.OpaqueRefreshOption
 
 func WithTokenFormat(format TokenFormatAdapter) Option {
 	return core.WithTokenFormat(format)
+}
+
+func WithAccessTokenFormat(format TokenFormatAdapter) Option {
+	return core.WithAccessTokenFormat(format)
+}
+
+func WithRefreshTokenFormat(format RefreshTokenFormat) Option {
+	return core.WithRefreshTokenFormat(format)
+}
+
+func WithOpaqueRefreshToken(opts ...OpaqueRefreshOption) Option {
+	return core.WithOpaqueRefreshToken(opts...)
 }
 
 func WithClock(clock Clock) Option {
@@ -94,12 +125,60 @@ func WithSerializer(serializer Serializer) Option {
 	return core.WithSerializer(serializer)
 }
 
+func WithRevocationStore(store RevocationStore) Option {
+	return core.WithRevocationStore(store)
+}
+
+func WithSessionEvictionHandler(handler func(ctx context.Context, evicted []SessionRef)) Option {
+	return core.WithSessionEvictionHandler(handler)
+}
+
+func WithGraceEncryptionKey(key []byte) Option {
+	return core.WithGraceEncryptionKey(key)
+}
+
+func WithRollbackFailureHandler(handler func(ctx context.Context, op string, tokenID string, err error)) Option {
+	return core.WithRollbackFailureHandler(handler)
+}
+
 func NewService(cfg Config, store SessionStore, opts ...Option) (*Service, error) {
 	return core.NewService(cfg, store, opts...)
 }
 
 func NewDefaultTokenFormatAdapter() TokenFormatAdapter {
 	return core.NewDefaultTokenFormatAdapter()
+}
+
+func NewSignedTokenFormatAdapter(secret []byte) TokenFormatAdapter {
+	return core.NewSignedTokenFormatAdapter(secret)
+}
+
+func NewJWTHS256FormatAdapter(secret []byte, opts ...JWTOption) TokenFormatAdapter {
+	return core.NewJWTHS256FormatAdapter(secret, opts...)
+}
+
+func WithJWTIssuer(issuer string) JWTOption {
+	return core.WithJWTIssuer(issuer)
+}
+
+func WithJWTAudience(audience ...string) JWTOption {
+	return core.WithJWTAudience(audience...)
+}
+
+func WithJWTLeeway(leeway time.Duration) JWTOption {
+	return core.WithJWTLeeway(leeway)
+}
+
+func WithJWTClock(clock Clock) JWTOption {
+	return core.WithJWTClock(clock)
+}
+
+func NewOpaqueRefreshTokenFormat(opts ...OpaqueRefreshOption) RefreshTokenFormat {
+	return core.NewOpaqueRefreshTokenFormat(opts...)
+}
+
+func WithOpaqueRandomSource(random RandomSource) OpaqueRefreshOption {
+	return core.WithOpaqueRandomSource(random)
 }
 
 func ParseBearerToken(authorization string) (string, error) {
